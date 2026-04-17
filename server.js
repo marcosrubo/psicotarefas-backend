@@ -6,6 +6,7 @@ import { createClient } from "@supabase/supabase-js";
 dotenv.config();
 
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 
@@ -14,40 +15,62 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// TESTE
 app.get("/", (req, res) => {
   res.send("API PsicoTarefas rodando 🚀");
 });
 
-// REGISTER
 app.post("/register", async (req, res) => {
-  const { email, password } = req.body;
+  const { nome, email, password, perfil } = req.body;
+
+  if (!nome || !email || !password || !perfil) {
+    return res.status(400).json({
+      error: "Nome, e-mail, senha e perfil são obrigatórios."
+    });
+  }
 
   try {
-    const { data: users } = await supabase.auth.admin.listUsers();
+    const { data: usersData, error: usersError } = await supabase.auth.admin.listUsers();
 
-    const exists = users.users.find(u => u.email === email);
+    if (usersError) {
+      return res.status(500).json({ error: usersError.message });
+    }
+
+    const exists = usersData.users.some(
+      (user) => user.email?.toLowerCase() === email.toLowerCase()
+    );
 
     if (exists) {
-      return res.status(400).json({ error: "Email já cadastrado" });
+      return res.status(400).json({ error: "E-mail já cadastrado." });
     }
 
     const { data, error } = await supabase.auth.admin.createUser({
       email,
       password,
-      email_confirm: true
+      email_confirm: true,
+      user_metadata: {
+        nome,
+        perfil
+      }
     });
 
-    if (error) throw error;
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
 
-    res.json({ success: true, user: data.user });
-
+    return res.status(201).json({
+      success: true,
+      user: data.user
+    });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    return res.status(500).json({
+      error: "Erro interno ao criar usuário."
+    });
   }
 });
 
-app.listen(3000, () => {
-  console.log("Servidor rodando na porta 3000");
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`Servidor rodando na porta ${PORT}`);
 });
 
