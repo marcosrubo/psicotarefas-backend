@@ -15,12 +15,19 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+function perfilValido(perfil) {
+  return ["paciente", "profissional"].includes(perfil);
+}
+
 app.get("/", (req, res) => {
   res.send("API PsicoTarefas rodando 🚀");
 });
 
 app.post("/register", async (req, res) => {
-  const { nome, email, password, perfil } = req.body;
+  const nome = req.body.nome?.trim();
+  const email = req.body.email?.trim().toLowerCase();
+  const password = req.body.password;
+  const perfil = req.body.perfil?.trim().toLowerCase();
 
   if (!nome || !email || !password || !perfil) {
     return res.status(400).json({
@@ -28,40 +35,87 @@ app.post("/register", async (req, res) => {
     });
   }
 
+  if (!perfilValido(perfil)) {
+    return res.status(400).json({
+      error: "Perfil inválido. Use 'paciente' ou 'profissional'."
+    });
+  }
+
+  let createdUserId = null;
+
   try {
-    const { data: usersData, error: usersError } = await supabase.auth.admin.listUsers();
+    const { data: authData, error: authError } =
+      await supabase.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true,
+        user_metadata: {
+          nome,
+          perfil
+        }
+      });
 
-    if (usersError) {
-      return res.status(500).json({ error: usersError.message });
+    if (authError) {
+      const mensagem =
+        authError.message?.toLowerCase().includes("already") ||
+        authError.message?.toLowerCase().includes("registered")
+          ? "E-mail já cadastrado."
+          : authError.message;
+
+      return res.status(400).json({
+        error: mensagem || "Erro ao criar usuário no Auth."
+      });
     }
 
-    const exists = usersData.users.some(
-      (user) => user.email?.toLowerCase() === email.toLowerCase()
-    );
-
-    if (exists) {
-      return res.status(400).json({ error: "E-mail já cadastrado." });
+    if (!authData?.user?.id) {
+      return res.status(500).json({
+        error: "Usuário criado sem ID válido no Auth."
+      });
     }
 
-    const { data, error } = await supabase.auth.admin.createUser({
+    createdUserId = authData.user.id;
+
+    const { error: perfilError } = await supabase.from("perfis").insert({
+      user_id: createdUserId,
+      nome,
       email,
-      password,
-      email_confirm: true,
-      user_metadata: {
-        nome,
-        perfil
-      }
+      perfil
     });
 
-    if (error) {
-      return res.status(400).json({ error: error.message });
+    if (perfilError) {
+      await supabase.auth.admin.deleteUser(createdUserId);
+
+      const mensagem =
+        perfilError.message?.toLowerCase().includes("duplicate") ||
+        perfilError.message?.toLowerCase().includes("unique")
+          ? "Já existe um perfil cadastrado com este e-mail."
+          : perfilError.message;
+
+      return res.status(400).json({
+        error: mensagem || "Erro ao criar perfil do usuário."
+      });
     }
 
     return res.status(201).json({
       success: true,
-      user: data.user
+      user: {
+        id: createdUserId,
+        nome,
+        email,
+        perfil
+      }
     });
   } catch (err) {
+    if (createdUserId) {
+      try {
+        await supabase.auth.admin.deleteUser(createdUserId);
+      } catch (rollbackError) {
+        console.error("Erro ao desfazer criação do usuário:", rollbackError);
+      }
+    }
+
+    console.error("Erro interno no /register:", err);
+
     return res.status(500).json({
       error: "Erro interno ao criar usuário."
     });
