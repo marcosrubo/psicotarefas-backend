@@ -34,11 +34,13 @@ function montarPromptDaTarefa({ title, description, promptComplement }) {
     "- summary: uma frase curta explicando a proposta do material",
     "- objective: no máximo 1 frase curta e sucinta",
     '- illustration: objeto com scene_title, subject, support_label e accent_color (hex suave como #7C6CFF, #4F9D8F ou #F59E0B)',
+    "- a ilustração deve sugerir uma cena simples, bonita, acolhedora e cartunesca, com personagem simpático em aparência de animação 3D leve",
     "- guided_questions: objeto com exatamente 3 perguntas curtas e variadas de acordo com o título e a descrição",
     "- guided_questions.observation: pergunta de observação coerente com o tema",
     "- guided_questions.action_reflection: pergunta de ação ou reflexão coerente com o tema",
     "- guided_questions.self_evaluation: pergunta de autoavaliação coerente com o tema e ligada ao recurso visual",
-    '- self_evaluation: objeto com type ("emotion_faces", "emotion_scale" ou "emotion_bar"), title, prompt, anchors (array com 3 a 5 rótulos curtos) e notes_prompt',
+    '- self_evaluation: objeto com type, title, prompt, anchors (array com 3 a 5 rótulos curtos) e notes_prompt',
+    '- self_evaluation.type deve ser sempre "emotion_faces"',
     "- self_evaluation deve sempre sugerir uma régua de emojis/emoções e abrir espaço para a pessoa registrar impressões ou perguntas para levar à psicóloga",
     "- closing_message: um parágrafo curto de encerramento acolhedor"
   ].join("\n");
