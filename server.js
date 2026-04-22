@@ -17,9 +17,10 @@ function montarPromptDaTarefa({ title, description, promptComplement }) {
   return [
     "Você está ajudando uma profissional a criar uma tarefa terapêutica prática para paciente.",
     "Gere um material inicial claro, acolhedor, objetivo e utilizável em contexto clínico.",
+    "O material deve seguir sempre a mesma estrutura, para virar uma ficha padronizada no sistema.",
     "Não cite diagnóstico, não faça promessas de cura e não use linguagem excessivamente técnica.",
     "Responda apenas em JSON válido, sem markdown, com estas chaves:",
-    'title, summary, objective, instructions, reflection_questions, closing_message',
+    'title, summary, objective, illustration, guided_questions, self_evaluation, closing_message',
     "",
     `Título da tarefa: ${title}`,
     `Descrição da tarefa: ${description}`,
@@ -30,8 +31,12 @@ function montarPromptDaTarefa({ title, description, promptComplement }) {
     "Regras:",
     "- summary: uma frase curta explicando a proposta do material",
     "- objective: um parágrafo curto",
-    "- instructions: array com 3 a 6 passos curtos",
-    "- reflection_questions: array com 3 a 5 perguntas curtas",
+    '- illustration: objeto com scene_title, subject, support_label e accent_color (hex suave como #7C6CFF, #4F9D8F ou #F59E0B)',
+    "- guided_questions: objeto com exatamente 3 perguntas curtas",
+    "- guided_questions.observation: pergunta de observação",
+    "- guided_questions.action_reflection: pergunta de ação ou reflexão",
+    "- guided_questions.self_evaluation: pergunta de autoavaliação ligada ao recurso visual",
+    '- self_evaluation: objeto com type ("emotion_faces", "emotion_scale" ou "emotion_bar"), title, prompt e anchors (array com 3 a 5 rótulos curtos)',
     "- closing_message: um parágrafo curto de encerramento acolhedor"
   ].join("\n");
 }
