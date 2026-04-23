@@ -13,7 +13,20 @@ app.get("/", (req, res) => {
   res.send("API PsicoTarefas rodando 🚀");
 });
 
-function montarPromptDaTarefa({ title, description, promptComplement }) {
+function montarPromptDaTarefa({ title, description, promptComplement, parameters = {} }) {
+  const parameterLines = [
+    parameters.age_range ? `Faixa etária: ${parameters.age_range}` : null,
+    parameters.goal ? `Objetivo principal da tarefa: ${parameters.goal}` : null,
+    parameters.tone ? `Tom da linguagem: ${parameters.tone}` : null,
+    parameters.estimated_time ? `Tempo estimado: ${parameters.estimated_time}` : null,
+    parameters.format ? `Formato da atividade: ${parameters.format}` : null,
+    parameters.frequency ? `Frequência sugerida: ${parameters.frequency}` : null,
+    parameters.context ? `Contexto principal: ${parameters.context}` : null,
+    parameters.observe_after
+      ? `Pontos para a profissional observar depois: ${parameters.observe_after}`
+      : null
+  ].filter(Boolean);
+
   return [
     "Você está ajudando uma profissional a criar uma tarefa terapêutica prática para paciente.",
     "Gere um material inicial claro, acolhedor, objetivo e utilizável em contexto clínico.",
@@ -23,6 +36,7 @@ function montarPromptDaTarefa({ title, description, promptComplement }) {
     "",
     `Título da tarefa: ${title}`,
     `Descrição da tarefa: ${description}`,
+    parameterLines.length ? parameterLines.join("\n") : "Parâmetros adicionais: nenhum",
     promptComplement
       ? `Complementos da profissional para a IA: ${promptComplement}`
       : "Complementos da profissional para a IA: nenhum",
@@ -37,7 +51,12 @@ function montarPromptDaTarefa({ title, description, promptComplement }) {
 }
 
 app.post("/api/ai/task-material-preview", async (req, res) => {
-  const { title = "", description = "", promptComplement = "" } = req.body || {};
+  const {
+    title = "",
+    description = "",
+    promptComplement = "",
+    parameters = {}
+  } = req.body || {};
 
   if (!title.trim() || !description.trim()) {
     return res.status(400).json({
@@ -74,7 +93,8 @@ app.post("/api/ai/task-material-preview", async (req, res) => {
             content: montarPromptDaTarefa({
               title: title.trim(),
               description: description.trim(),
-              promptComplement: promptComplement.trim()
+              promptComplement: promptComplement.trim(),
+              parameters
             })
           }
         ]
