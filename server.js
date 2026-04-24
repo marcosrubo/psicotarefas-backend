@@ -1,6 +1,8 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { createClient } from "@supabase/supabase-js";
 
 dotenv.config();
 
@@ -8,6 +10,19 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+
+const OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions";
+const TASK_PDF_BUCKET = process.env.TASK_PDF_BUCKET || "banco-tarefas-pdf";
+
+const supabaseAdmin =
+  process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY
+    ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false
+        }
+      })
+    : null;
 
 app.get("/", (req, res) => {
   res.send("API PsicoTarefas rodando 🚀");
@@ -32,7 +47,7 @@ function montarPromptDaTarefa({ title, description, promptComplement, parameters
     "Gere um material inicial claro, acolhedor, objetivo e utilizável em contexto clínico.",
     "Não cite diagnóstico, não faça promessas de cura e não use linguagem excessivamente técnica.",
     "Responda apenas em JSON válido, sem markdown, com estas chaves:",
-    'title, summary, objective, instructions, reflection_questions, closing_message',
+    "title, summary, objective, instructions, reflection_questions, closing_message",
     "",
     `Título da tarefa: ${title}`,
     `Descrição da tarefa: ${description}`,
@@ -48,6 +63,378 @@ function montarPromptDaTarefa({ title, description, promptComplement, parameters
     "- reflection_questions: array com 3 a 5 perguntas curtas",
     "- closing_message: um parágrafo curto de encerramento acolhedor"
   ].join("\n");
+}
+
+function slugify(value) {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9.-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-|-$/g, "")
+    .toLowerCase();
+}
+
+function wrapText(text, font, fontSize, maxWidth) {
+  const safeText = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (!safeText) return [""];
+
+  const words = safeText.split(" ");
+  const lines = [];
+  let current = words[0] || "";
+
+  for (let index = 1; index < words.length; index += 1) {
+    const word = words[index];
+    const candidate = `${current} ${word}`;
+
+    if (font.widthOfTextAtSize(candidate, fontSize) <= maxWidth) {
+      current = candidate;
+    } else {
+      lines.push(current);
+      current = word;
+    }
+  }
+
+  lines.push(current);
+  return lines;
+}
+
+function drawWrappedText(page, text, options) {
+  const {
+    x,
+    y,
+    width,
+    font,
+    fontSize = 12,
+    lineHeight = fontSize * 1.45,
+    color = rgb(0.2, 0.24, 0.33)
+  } = options;
+
+  const paragraphs = String(text ?? "")
+    .split("\n")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  let cursorY = y;
+
+  paragraphs.forEach((paragraph, paragraphIndex) => {
+    const lines = wrapText(paragraph, font, fontSize, width);
+
+    lines.forEach((line) => {
+      page.drawText(line, {
+        x,
+        y: cursorY,
+        size: fontSize,
+        font,
+        color
+      });
+      cursorY -= lineHeight;
+    });
+
+    if (paragraphIndex < paragraphs.length - 1) {
+      cursorY -= lineHeight * 0.4;
+    }
+  });
+
+  return cursorY;
+}
+
+function drawBulletList(page, items, options) {
+  const {
+    x,
+    y,
+    width,
+    font,
+    fontSize = 12,
+    lineHeight = fontSize * 1.45,
+    color = rgb(0.2, 0.24, 0.33)
+  } = options;
+
+  let cursorY = y;
+
+  (items || []).forEach((item) => {
+    const text = String(item ?? "").trim();
+    if (!text) return;
+
+    const bulletX = x;
+    const contentX = x + 14;
+    const availableWidth = Math.max(width - 14, 60);
+    const lines = wrapText(text, font, fontSize, availableWidth);
+
+    page.drawText("•", {
+      x: bulletX,
+      y: cursorY,
+      size: fontSize,
+      font,
+      color
+    });
+
+    lines.forEach((line, index) => {
+      page.drawText(line, {
+        x: contentX,
+        y: cursorY - index * lineHeight,
+        size: fontSize,
+        font,
+        color
+      });
+    });
+
+    cursorY -= lines.length * lineHeight + 4;
+  });
+
+  return cursorY;
+}
+
+async function gerarPdfDaTarefa({ title, description, material, patientName, professionalName }) {
+  const pdfDoc = await PDFDocument.create();
+  const page = pdfDoc.addPage([595.28, 841.89]);
+  const width = page.getWidth();
+  const height = page.getHeight();
+  const marginX = 48;
+  const contentWidth = width - marginX * 2;
+  const titleColor = rgb(0.33, 0.28, 0.94);
+  const bodyColor = rgb(0.2, 0.24, 0.33);
+  const subtleColor = rgb(0.42, 0.47, 0.56);
+  const borderColor = rgb(0.88, 0.9, 0.95);
+
+  const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+  page.drawRectangle({
+    x: 24,
+    y: 24,
+    width: width - 48,
+    height: height - 48,
+    borderColor,
+    borderWidth: 1,
+    borderRadius: 24
+  });
+
+  let cursorY = height - 60;
+
+  page.drawText("Tarefa terapêutica", {
+    x: marginX,
+    y: cursorY,
+    size: 13,
+    font: fontBold,
+    color: titleColor
+  });
+
+  cursorY -= 34;
+  cursorY = drawWrappedText(page, material?.title || title || "Tarefa", {
+    x: marginX,
+    y: cursorY,
+    width: contentWidth,
+    font: fontBold,
+    fontSize: 28,
+    lineHeight: 32,
+    color: rgb(0.12, 0.14, 0.19)
+  });
+
+  cursorY -= 8;
+  cursorY = drawWrappedText(page, material?.summary || description || "", {
+    x: marginX,
+    y: cursorY,
+    width: contentWidth,
+    font: fontRegular,
+    fontSize: 13,
+    lineHeight: 18,
+    color: subtleColor
+  });
+
+  cursorY -= 16;
+
+  page.drawRectangle({
+    x: marginX,
+    y: cursorY - 52,
+    width: contentWidth,
+    height: 52,
+    color: rgb(0.97, 0.98, 1),
+    borderColor: rgb(0.86, 0.88, 0.97),
+    borderWidth: 1,
+    borderRadius: 16
+  });
+
+  page.drawText(`Paciente: ${patientName || "Paciente"}`, {
+    x: marginX + 16,
+    y: cursorY - 20,
+    size: 11,
+    font: fontBold,
+    color: subtleColor
+  });
+
+  page.drawText(`Profissional: ${professionalName || "Profissional"}`, {
+    x: marginX + 16,
+    y: cursorY - 36,
+    size: 11,
+    font: fontRegular,
+    color: subtleColor
+  });
+
+  cursorY -= 78;
+
+  page.drawText("Objetivo", {
+    x: marginX,
+    y: cursorY,
+    size: 14,
+    font: fontBold,
+    color: titleColor
+  });
+
+  cursorY -= 22;
+  cursorY = drawWrappedText(page, material?.objective || "", {
+    x: marginX,
+    y: cursorY,
+    width: contentWidth,
+    font: fontRegular,
+    fontSize: 12,
+    lineHeight: 18,
+    color: bodyColor
+  });
+
+  cursorY -= 18;
+  page.drawText("Como aplicar", {
+    x: marginX,
+    y: cursorY,
+    size: 14,
+    font: fontBold,
+    color: titleColor
+  });
+
+  cursorY -= 22;
+  cursorY = drawBulletList(page, material?.instructions || [], {
+    x: marginX,
+    y: cursorY,
+    width: contentWidth,
+    font: fontRegular,
+    fontSize: 12,
+    lineHeight: 18,
+    color: bodyColor
+  });
+
+  cursorY -= 10;
+  page.drawText("Perguntas guiadas", {
+    x: marginX,
+    y: cursorY,
+    size: 14,
+    font: fontBold,
+    color: titleColor
+  });
+
+  cursorY -= 22;
+  cursorY = drawBulletList(page, material?.reflection_questions || [], {
+    x: marginX,
+    y: cursorY,
+    width: contentWidth,
+    font: fontRegular,
+    fontSize: 12,
+    lineHeight: 18,
+    color: bodyColor
+  });
+
+  cursorY -= 6;
+  page.drawText("Fechamento", {
+    x: marginX,
+    y: cursorY,
+    size: 14,
+    font: fontBold,
+    color: titleColor
+  });
+
+  cursorY -= 22;
+  drawWrappedText(page, material?.closing_message || "", {
+    x: marginX,
+    y: cursorY,
+    width: contentWidth,
+    font: fontRegular,
+    fontSize: 12,
+    lineHeight: 18,
+    color: bodyColor
+  });
+
+  return pdfDoc.save();
+}
+
+async function enviarPdfGeradoParaStorage({ userId, title, pdfBytes }) {
+  if (!supabaseAdmin) {
+    throw new Error("As credenciais de serviço do Supabase ainda não foram configuradas no backend.");
+  }
+
+  const safeTitle = slugify(title || "tarefa") || "tarefa";
+  const fileName = `${safeTitle}-${Date.now()}.pdf`;
+  const filePath = `${userId}/ia/${fileName}`;
+  const fileBuffer = Buffer.from(pdfBytes);
+
+  const { error } = await supabaseAdmin.storage
+    .from(TASK_PDF_BUCKET)
+    .upload(filePath, fileBuffer, {
+      cacheControl: "3600",
+      upsert: false,
+      contentType: "application/pdf"
+    });
+
+  if (error) {
+    throw new Error(`Falha ao enviar PDF gerado: ${error.message}`);
+  }
+
+  return {
+    pdfPath: filePath,
+    pdfName: fileName
+  };
+}
+
+async function chamarOpenAiParaPrevia({ title, description, promptComplement, parameters, model }) {
+  const response = await fetch(OPENAI_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.7,
+      messages: [
+        {
+          role: "system",
+          content:
+            "Você gera materiais terapêuticos iniciais em JSON claro e bem estruturado para revisão profissional."
+        },
+        {
+          role: "user",
+          content: montarPromptDaTarefa({
+            title: title.trim(),
+            description: description.trim(),
+            promptComplement: promptComplement.trim(),
+            parameters
+          })
+        }
+      ]
+    })
+  });
+
+  const payload = await response.json();
+
+  if (!response.ok) {
+    const apiError =
+      payload?.error?.message || "A OpenAI não conseguiu gerar o material neste momento.";
+    throw new Error(apiError);
+  }
+
+  const content = payload?.choices?.[0]?.message?.content?.trim();
+
+  if (!content) {
+    throw new Error("A IA não retornou conteúdo para esta tarefa.");
+  }
+
+  try {
+    return JSON.parse(content);
+  } catch (parseError) {
+    return {
+      title: title.trim(),
+      summary: "Prévia gerada pela IA.",
+      raw_text: content
+    };
+  }
 }
 
 app.post("/api/ai/task-material-preview", async (req, res) => {
@@ -73,67 +460,65 @@ app.post("/api/ai/task-material-preview", async (req, res) => {
   const model = process.env.OPENAI_TASKS_MODEL || process.env.OPENAI_MODEL || "gpt-5.4-mini";
 
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.7,
-        messages: [
-          {
-            role: "system",
-            content:
-              "Você gera materiais terapêuticos iniciais em JSON claro e bem estruturado para revisão profissional."
-          },
-          {
-            role: "user",
-            content: montarPromptDaTarefa({
-              title: title.trim(),
-              description: description.trim(),
-              promptComplement: promptComplement.trim(),
-              parameters
-            })
-          }
-        ]
-      })
+    const material = await chamarOpenAiParaPrevia({
+      title,
+      description,
+      promptComplement,
+      parameters,
+      model
     });
-
-    const payload = await response.json();
-
-    if (!response.ok) {
-      const apiError =
-        payload?.error?.message || "A OpenAI não conseguiu gerar o material neste momento.";
-      return res.status(502).json({ error: apiError });
-    }
-
-    const content = payload?.choices?.[0]?.message?.content?.trim();
-
-    if (!content) {
-      return res.status(502).json({
-        error: "A IA não retornou conteúdo para esta tarefa."
-      });
-    }
-
-    let material;
-
-    try {
-      material = JSON.parse(content);
-    } catch (parseError) {
-      material = {
-        title: title.trim(),
-        summary: "Prévia gerada pela IA.",
-        raw_text: content
-      };
-    }
 
     return res.json({ material });
   } catch (error) {
     console.error("Erro ao gerar material com IA:", error);
     return res.status(500).json({
-      error: "Não foi possível gerar o material com IA."
+      error: error.message || "Não foi possível gerar o material com IA."
+    });
+  }
+});
+
+app.post("/api/ai/task-material-pdf", async (req, res) => {
+  const {
+    userId = "",
+    title = "",
+    description = "",
+    material = null,
+    patientName = "",
+    professionalName = ""
+  } = req.body || {};
+
+  if (!userId.trim() || !title.trim()) {
+    return res.status(400).json({
+      error: "Informe usuário e título da tarefa para gerar o PDF."
+    });
+  }
+
+  if (!material || typeof material !== "object") {
+    return res.status(400).json({
+      error: "Nenhuma prévia válida foi enviada para gerar o PDF."
+    });
+  }
+
+  try {
+    const pdfBytes = await gerarPdfDaTarefa({
+      title: title.trim(),
+      description: description.trim(),
+      material,
+      patientName,
+      professionalName
+    });
+
+    const uploaded = await enviarPdfGeradoParaStorage({
+      userId: userId.trim(),
+      title: material.title || title,
+      pdfBytes
+    });
+
+    return res.json(uploaded);
+  } catch (error) {
+    console.error("Erro ao gerar PDF da tarefa com IA:", error);
+    return res.status(500).json({
+      error: error.message || "Não foi possível gerar o PDF da tarefa com IA."
     });
   }
 });
