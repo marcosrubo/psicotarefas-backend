@@ -15,6 +15,7 @@ app.use(express.json({ limit: "25mb" }));
 
 const OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions";
 const TASK_PDF_BUCKET = process.env.TASK_PDF_BUCKET || "banco-tarefas-pdf";
+const TASK_PDF_PREVIEW_BUCKET = process.env.TASK_PDF_PREVIEW_BUCKET || "banco-tarefas-preview";
 const PDF_STANDARD_FONTS_URL = new URL("./node_modules/pdfjs-dist/standard_fonts/", import.meta.url).toString();
 
 const supabaseAdmin =
@@ -153,11 +154,36 @@ async function gerarMiniaturaDoPdf(pdfBuffer) {
 }
 
 async function uploadTaskAssetToStorage(storagePath, fileBuffer, contentType) {
+  return uploadTaskAssetToBucket(TASK_PDF_BUCKET, storagePath, fileBuffer, contentType);
+}
+
+async function ensureStorageBucket(bucketName, options = {}) {
   if (!supabaseAdmin) {
     throw new Error("As credenciais de serviço do Supabase ainda não foram configuradas no backend.");
   }
 
-  const { error } = await supabaseAdmin.storage.from(TASK_PDF_BUCKET).upload(storagePath, fileBuffer, {
+  const { data: buckets, error: listError } = await supabaseAdmin.storage.listBuckets();
+  if (listError) {
+    throw new Error(`Falha ao listar buckets do storage: ${listError.message}`);
+  }
+
+  const exists = Array.isArray(buckets) && buckets.some((bucket) => bucket.name === bucketName);
+  if (exists) {
+    return;
+  }
+
+  const { error: createError } = await supabaseAdmin.storage.createBucket(bucketName, options);
+  if (createError && !/already exists/i.test(createError.message || "")) {
+    throw new Error(`Falha ao criar bucket ${bucketName}: ${createError.message}`);
+  }
+}
+
+async function uploadTaskAssetToBucket(bucketName, storagePath, fileBuffer, contentType) {
+  if (!supabaseAdmin) {
+    throw new Error("As credenciais de serviço do Supabase ainda não foram configuradas no backend.");
+  }
+
+  const { error } = await supabaseAdmin.storage.from(bucketName).upload(storagePath, fileBuffer, {
     cacheControl: "3600",
     upsert: false,
     contentType
@@ -504,13 +530,20 @@ app.post("/api/storage/upload-task-pdf", async (req, res) => {
 
     const previewBuffer = await gerarMiniaturaDoPdf(pdfBuffer);
 
+    await ensureStorageBucket(TASK_PDF_PREVIEW_BUCKET, {
+      public: false,
+      fileSizeLimit: "10MB",
+      allowedMimeTypes: ["image/png"]
+    });
+
     await uploadTaskAssetToStorage(pdfPath, pdfBuffer, "application/pdf");
-    await uploadTaskAssetToStorage(previewPath, previewBuffer, "image/png");
+    await uploadTaskAssetToBucket(TASK_PDF_PREVIEW_BUCKET, previewPath, previewBuffer, "image/png");
 
     return res.json({
       pdfPath,
       pdfName: fileName,
-      previewPath
+      previewPath,
+      previewBucket: TASK_PDF_PREVIEW_BUCKET
     });
   } catch (error) {
     console.error("Erro ao enviar PDF com preview:", error);
