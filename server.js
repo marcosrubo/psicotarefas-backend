@@ -2,6 +2,8 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
+import { createCanvas } from "@napi-rs/canvas";
 import { createClient } from "@supabase/supabase-js";
 
 dotenv.config();
@@ -9,10 +11,11 @@ dotenv.config();
 const app = express();
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "25mb" }));
 
 const OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions";
 const TASK_PDF_BUCKET = process.env.TASK_PDF_BUCKET || "banco-tarefas-pdf";
+const PDF_STANDARD_FONTS_URL = new URL("./node_modules/pdfjs-dist/standard_fonts/", import.meta.url).toString();
 
 const supabaseAdmin =
   process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -75,8 +78,98 @@ function slugify(value) {
     .toLowerCase();
 }
 
+function sanitizePdfText(value) {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .replace(/\r\n/g, "\n")
+    .replace(/\u00a0/g, " ")
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201c\u201d]/g, '"')
+    .replace(/[\u2013\u2014]/g, "-")
+    .replace(/\u2026/g, "...")
+    .replace(/[^\x09\x0A\x0D\x20-\xFF]/g, "");
+}
+
+function decodeBase64File(fileBase64) {
+  const cleanBase64 = String(fileBase64 || "").replace(/^data:.*;base64,/, "").trim();
+  if (!cleanBase64) {
+    throw new Error("Nenhum arquivo PDF foi enviado.");
+  }
+
+  return Buffer.from(cleanBase64, "base64");
+}
+
+function buildStoragePaths({ userId, fileName, scope = "manual", themeName = "", resourceName = "" }) {
+  const baseName = String(fileName || "material").replace(/\.pdf$/i, "");
+  const safeBase = slugify(baseName) || "material";
+  const safeTheme = slugify(themeName) || "tema";
+  const safeResource = slugify(resourceName) || safeBase;
+
+  if (scope === "banco-tarefas") {
+    const finalBase = `${Date.now()}-${safeTheme}-${safeResource}`;
+    const baseDir = `banco-tarefas/${safeTheme}`;
+
+    return {
+      pdfPath: `${baseDir}/${finalBase}.pdf`,
+      previewPath: `${baseDir}/previews/${finalBase}.png`
+    };
+  }
+
+  if (!String(userId || "").trim()) {
+    throw new Error("Usuário inválido para armazenar o PDF.");
+  }
+
+  const finalBase = `${Date.now()}-${safeBase}`;
+  const baseDir = `${userId}/manual`;
+
+  return {
+    pdfPath: `${baseDir}/${finalBase}.pdf`,
+    previewPath: `${baseDir}/previews/${finalBase}.png`
+  };
+}
+
+async function gerarMiniaturaDoPdf(pdfBuffer) {
+  const loadingTask = pdfjsLib.getDocument({
+    data: new Uint8Array(pdfBuffer),
+    standardFontDataUrl: PDF_STANDARD_FONTS_URL
+  });
+
+  const pdfDocument = await loadingTask.promise;
+  const firstPage = await pdfDocument.getPage(1);
+  const baseViewport = firstPage.getViewport({ scale: 1 });
+  const targetWidth = 1200;
+  const scale = targetWidth / baseViewport.width;
+  const viewport = firstPage.getViewport({ scale });
+
+  const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
+  const context = canvas.getContext("2d");
+
+  await firstPage.render({
+    canvasContext: context,
+    viewport
+  }).promise;
+
+  return canvas.toBuffer("image/png");
+}
+
+async function uploadTaskAssetToStorage(storagePath, fileBuffer, contentType) {
+  if (!supabaseAdmin) {
+    throw new Error("As credenciais de serviço do Supabase ainda não foram configuradas no backend.");
+  }
+
+  const { error } = await supabaseAdmin.storage.from(TASK_PDF_BUCKET).upload(storagePath, fileBuffer, {
+    cacheControl: "3600",
+    upsert: false,
+    contentType
+  });
+
+  if (error) {
+    throw new Error(`Falha ao enviar arquivo para o storage: ${error.message}`);
+  }
+}
+
 function wrapText(text, font, fontSize, maxWidth) {
-  const safeText = String(text ?? "").replace(/\s+/g, " ").trim();
+  const safeText = sanitizePdfText(text).replace(/\s+/g, " ").trim();
   if (!safeText) return [""];
 
   const words = safeText.split(" ");
@@ -110,7 +203,7 @@ function drawWrappedText(page, text, options) {
     color = rgb(0.2, 0.24, 0.33)
   } = options;
 
-  const paragraphs = String(text ?? "")
+  const paragraphs = sanitizePdfText(text)
     .split("\n")
     .map((item) => item.trim())
     .filter(Boolean);
@@ -153,7 +246,7 @@ function drawBulletList(page, items, options) {
   let cursorY = y;
 
   (items || []).forEach((item) => {
-    const text = String(item ?? "").trim();
+    const text = sanitizePdfText(item).trim();
     if (!text) return;
 
     const bulletX = x;
@@ -255,7 +348,7 @@ async function gerarPdfDaTarefa({ title, description, material, patientName, pro
     borderRadius: 16
   });
 
-  page.drawText(`Paciente: ${patientName || "Paciente"}`, {
+  page.drawText(`Paciente: ${sanitizePdfText(patientName || "Paciente")}`, {
     x: marginX + 16,
     y: cursorY - 20,
     size: 11,
@@ -263,7 +356,7 @@ async function gerarPdfDaTarefa({ title, description, material, patientName, pro
     color: subtleColor
   });
 
-  page.drawText(`Profissional: ${professionalName || "Profissional"}`, {
+  page.drawText(`Profissional: ${sanitizePdfText(professionalName || "Profissional")}`, {
     x: marginX + 16,
     y: cursorY - 36,
     size: 11,
@@ -382,6 +475,50 @@ async function enviarPdfGeradoParaStorage({ userId, title, pdfBytes }) {
     pdfName: fileName
   };
 }
+
+app.post("/api/storage/upload-task-pdf", async (req, res) => {
+  const {
+    userId = "",
+    fileName = "",
+    fileBase64 = "",
+    scope = "manual",
+    themeName = "",
+    resourceName = ""
+  } = req.body || {};
+
+  if (!fileName.trim()) {
+    return res.status(400).json({
+      error: "Informe o nome do arquivo PDF."
+    });
+  }
+
+  try {
+    const pdfBuffer = decodeBase64File(fileBase64);
+    const { pdfPath, previewPath } = buildStoragePaths({
+      userId,
+      fileName,
+      scope,
+      themeName,
+      resourceName
+    });
+
+    const previewBuffer = await gerarMiniaturaDoPdf(pdfBuffer);
+
+    await uploadTaskAssetToStorage(pdfPath, pdfBuffer, "application/pdf");
+    await uploadTaskAssetToStorage(previewPath, previewBuffer, "image/png");
+
+    return res.json({
+      pdfPath,
+      pdfName: fileName,
+      previewPath
+    });
+  } catch (error) {
+    console.error("Erro ao enviar PDF com preview:", error);
+    return res.status(500).json({
+      error: error.message || "Não foi possível enviar o PDF com preview."
+    });
+  }
+});
 
 async function chamarOpenAiParaPrevia({ title, description, promptComplement, parameters, model }) {
   const response = await fetch(OPENAI_ENDPOINT, {

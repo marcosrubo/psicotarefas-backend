@@ -8,14 +8,21 @@
     "start": "node server.js",
     "dev": "node --watch server.js"
   },
-  "keywords": ["psicotarefas", "backend", "supabase", "auth"],
+  "keywords": [
+    "psicotarefas",
+    "backend",
+    "supabase",
+    "auth"
+  ],
   "author": "Marcos Rubo",
   "license": "ISC",
   "dependencies": {
+    "@napi-rs/canvas": "^0.1.100",
     "@supabase/supabase-js": "^2.43.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "pdf-lib": "^1.17.1"
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^5.7.284"
   }
 }
