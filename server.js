@@ -306,10 +306,13 @@ function drawBulletList(page, items, options) {
 
 async function gerarPdfDaTarefa({ title, description, material, patientName, professionalName }) {
   const pdfDoc = await PDFDocument.create();
-  const page = pdfDoc.addPage([595.28, 841.89]);
+  const pageSize = [595.28, 841.89];
+  let page = pdfDoc.addPage(pageSize);
   const width = page.getWidth();
   const height = page.getHeight();
   const marginX = 48;
+  const topMargin = 60;
+  const bottomMargin = 52;
   const contentWidth = width - marginX * 2;
   const titleColor = rgb(0.33, 0.28, 0.94);
   const bodyColor = rgb(0.2, 0.24, 0.33);
@@ -319,17 +322,181 @@ async function gerarPdfDaTarefa({ title, description, material, patientName, pro
   const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-  page.drawRectangle({
-    x: 24,
-    y: 24,
-    width: width - 48,
-    height: height - 48,
-    borderColor,
-    borderWidth: 1,
-    borderRadius: 24
-  });
+  function drawPageFrame(targetPage) {
+    targetPage.drawRectangle({
+      x: 24,
+      y: 24,
+      width: width - 48,
+      height: height - 48,
+      borderColor,
+      borderWidth: 1,
+      borderRadius: 24
+    });
+  }
 
-  let cursorY = height - 60;
+  function createPage() {
+    page = pdfDoc.addPage(pageSize);
+    drawPageFrame(page);
+    return height - topMargin;
+  }
+
+  function ensureSpace(cursorY, requiredHeight) {
+    if (cursorY - requiredHeight >= bottomMargin) {
+      return { page, cursorY };
+    }
+
+    return {
+      page,
+      cursorY: createPage()
+    };
+  }
+
+  function drawWrappedTextPaged(text, options) {
+    const {
+      x,
+      y,
+      width,
+      font,
+      fontSize = 12,
+      lineHeight = fontSize * 1.45,
+      color = rgb(0.2, 0.24, 0.33),
+      paragraphSpacing = lineHeight * 0.4
+    } = options;
+
+    const paragraphs = sanitizePdfText(text)
+      .split("\n")
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    let cursorY = y;
+
+    paragraphs.forEach((paragraph, paragraphIndex) => {
+      const lines = wrapText(paragraph, font, fontSize, width);
+
+      lines.forEach((line) => {
+        ({ cursorY } = ensureSpace(cursorY, lineHeight));
+
+        page.drawText(line, {
+          x,
+          y: cursorY,
+          size: fontSize,
+          font,
+          color
+        });
+
+        cursorY -= lineHeight;
+      });
+
+      if (paragraphIndex < paragraphs.length - 1) {
+        cursorY -= paragraphSpacing;
+      }
+    });
+
+    return cursorY;
+  }
+
+  function drawBulletListPaged(items, options) {
+    const {
+      x,
+      y,
+      width,
+      font,
+      fontSize = 12,
+      lineHeight = fontSize * 1.45,
+      color = rgb(0.2, 0.24, 0.33),
+      itemSpacing = 4
+    } = options;
+
+    let cursorY = y;
+
+    (items || []).forEach((item) => {
+      const text = sanitizePdfText(item).trim();
+      if (!text) return;
+
+      const bulletX = x;
+      const contentX = x + 14;
+      const availableWidth = Math.max(width - 14, 60);
+      const lines = wrapText(text, font, fontSize, availableWidth);
+
+      lines.forEach((line, index) => {
+        ({ cursorY } = ensureSpace(cursorY, lineHeight));
+
+        if (index === 0) {
+          page.drawText("•", {
+            x: bulletX,
+            y: cursorY,
+            size: fontSize,
+            font,
+            color
+          });
+        }
+
+        page.drawText(line, {
+          x: contentX,
+          y: cursorY,
+          size: fontSize,
+          font,
+          color
+        });
+
+        cursorY -= lineHeight;
+      });
+
+      cursorY -= itemSpacing;
+    });
+
+    return cursorY;
+  }
+
+  function drawSectionTitle(text, cursorY) {
+    ({ cursorY } = ensureSpace(cursorY, 22));
+
+    page.drawText(text, {
+      x: marginX,
+      y: cursorY,
+      size: 14,
+      font: fontBold,
+      color: titleColor
+    });
+
+    return cursorY - 22;
+  }
+
+  function drawMetaBox(cursorY) {
+    const boxHeight = 52;
+    ({ cursorY } = ensureSpace(cursorY, boxHeight + 10));
+
+    page.drawRectangle({
+      x: marginX,
+      y: cursorY - boxHeight,
+      width: contentWidth,
+      height: boxHeight,
+      color: rgb(0.97, 0.98, 1),
+      borderColor: rgb(0.86, 0.88, 0.97),
+      borderWidth: 1,
+      borderRadius: 16
+    });
+
+    page.drawText(`Paciente: ${sanitizePdfText(patientName || "Paciente")}`, {
+      x: marginX + 16,
+      y: cursorY - 20,
+      size: 11,
+      font: fontBold,
+      color: subtleColor
+    });
+
+    page.drawText(`Profissional: ${sanitizePdfText(professionalName || "Profissional")}`, {
+      x: marginX + 16,
+      y: cursorY - 36,
+      size: 11,
+      font: fontRegular,
+      color: subtleColor
+    });
+
+    return cursorY - 78;
+  }
+
+  let cursorY = createPage();
 
   page.drawText("Tarefa terapêutica", {
     x: marginX,
@@ -340,7 +507,7 @@ async function gerarPdfDaTarefa({ title, description, material, patientName, pro
   });
 
   cursorY -= 34;
-  cursorY = drawWrappedText(page, material?.title || title || "Tarefa", {
+  cursorY = drawWrappedTextPaged(material?.title || title || "Tarefa", {
     x: marginX,
     y: cursorY,
     width: contentWidth,
@@ -351,7 +518,7 @@ async function gerarPdfDaTarefa({ title, description, material, patientName, pro
   });
 
   cursorY -= 8;
-  cursorY = drawWrappedText(page, material?.summary || description || "", {
+  cursorY = drawWrappedTextPaged(material?.summary || description || "", {
     x: marginX,
     y: cursorY,
     width: contentWidth,
@@ -362,46 +529,10 @@ async function gerarPdfDaTarefa({ title, description, material, patientName, pro
   });
 
   cursorY -= 16;
+  cursorY = drawMetaBox(cursorY);
 
-  page.drawRectangle({
-    x: marginX,
-    y: cursorY - 52,
-    width: contentWidth,
-    height: 52,
-    color: rgb(0.97, 0.98, 1),
-    borderColor: rgb(0.86, 0.88, 0.97),
-    borderWidth: 1,
-    borderRadius: 16
-  });
-
-  page.drawText(`Paciente: ${sanitizePdfText(patientName || "Paciente")}`, {
-    x: marginX + 16,
-    y: cursorY - 20,
-    size: 11,
-    font: fontBold,
-    color: subtleColor
-  });
-
-  page.drawText(`Profissional: ${sanitizePdfText(professionalName || "Profissional")}`, {
-    x: marginX + 16,
-    y: cursorY - 36,
-    size: 11,
-    font: fontRegular,
-    color: subtleColor
-  });
-
-  cursorY -= 78;
-
-  page.drawText("Objetivo", {
-    x: marginX,
-    y: cursorY,
-    size: 14,
-    font: fontBold,
-    color: titleColor
-  });
-
-  cursorY -= 22;
-  cursorY = drawWrappedText(page, material?.objective || "", {
+  cursorY = drawSectionTitle("Objetivo", cursorY);
+  cursorY = drawWrappedTextPaged(material?.objective || "", {
     x: marginX,
     y: cursorY,
     width: contentWidth,
@@ -412,16 +543,8 @@ async function gerarPdfDaTarefa({ title, description, material, patientName, pro
   });
 
   cursorY -= 18;
-  page.drawText("Como aplicar", {
-    x: marginX,
-    y: cursorY,
-    size: 14,
-    font: fontBold,
-    color: titleColor
-  });
-
-  cursorY -= 22;
-  cursorY = drawBulletList(page, material?.instructions || [], {
+  cursorY = drawSectionTitle("Como aplicar", cursorY);
+  cursorY = drawBulletListPaged(material?.instructions || [], {
     x: marginX,
     y: cursorY,
     width: contentWidth,
@@ -432,16 +555,8 @@ async function gerarPdfDaTarefa({ title, description, material, patientName, pro
   });
 
   cursorY -= 10;
-  page.drawText("Perguntas guiadas", {
-    x: marginX,
-    y: cursorY,
-    size: 14,
-    font: fontBold,
-    color: titleColor
-  });
-
-  cursorY -= 22;
-  cursorY = drawBulletList(page, material?.reflection_questions || [], {
+  cursorY = drawSectionTitle("Perguntas guiadas", cursorY);
+  cursorY = drawBulletListPaged(material?.reflection_questions || [], {
     x: marginX,
     y: cursorY,
     width: contentWidth,
@@ -452,16 +567,8 @@ async function gerarPdfDaTarefa({ title, description, material, patientName, pro
   });
 
   cursorY -= 6;
-  page.drawText("Fechamento", {
-    x: marginX,
-    y: cursorY,
-    size: 14,
-    font: fontBold,
-    color: titleColor
-  });
-
-  cursorY -= 22;
-  drawWrappedText(page, material?.closing_message || "", {
+  cursorY = drawSectionTitle("Fechamento", cursorY);
+  drawWrappedTextPaged(material?.closing_message || "", {
     x: marginX,
     y: cursorY,
     width: contentWidth,
