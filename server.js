@@ -307,9 +307,9 @@ function drawBulletList(page, items, options) {
 async function gerarPdfDaTarefa({ title, description, material, patientName, professionalName }) {
   const pdfDoc = await PDFDocument.create();
   const pageSize = [595.28, 841.89];
-  let page = pdfDoc.addPage(pageSize);
-  const width = page.getWidth();
-  const height = page.getHeight();
+  let page = null;
+  let width = pageSize[0];
+  let height = pageSize[1];
   const marginX = 48;
   const topMargin = 60;
   const bottomMargin = 52;
@@ -336,6 +336,8 @@ async function gerarPdfDaTarefa({ title, description, material, patientName, pro
 
   function createPage() {
     page = pdfDoc.addPage(pageSize);
+    width = page.getWidth();
+    height = page.getHeight();
     drawPageFrame(page);
     return height - topMargin;
   }
