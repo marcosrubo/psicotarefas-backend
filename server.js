@@ -69,6 +69,69 @@ function montarPromptDaTarefa({ title, description, promptComplement, parameters
   ].join("\n");
 }
 
+function montarPromptDoParecer({
+  patientName,
+  taskTitle,
+  taskDescription,
+  taskOrigin,
+  taskInteractionPolicy,
+  snippets = [],
+  timelineSummary = [],
+  interactions = []
+}) {
+  const safeSnippets = (snippets || [])
+    .map((item, index) =>
+      `${index + 1}. [${item.author}] ${item.created_at || "-"} :: ${String(item.text || "").trim()}`
+    )
+    .join("\n");
+
+  const safeTimeline = (timelineSummary || [])
+    .map((item, index) => `${index + 1}. ${String(item || "").trim()}`)
+    .join("\n");
+
+  const safeInteractions = (interactions || [])
+    .map(
+      (item, index) =>
+        `${index + 1}. [${item.author}] ${item.created_at || "-"} :: ${String(item.text || "").trim()}`
+    )
+    .join("\n");
+
+  return [
+    "Você vai apoiar uma profissional com um parecer de andamento de tarefa terapêutica.",
+    "Isto é apoio ao profissional, não conclusão clínica automática ou diagnóstico.",
+    "Evite linguagem diagnóstica fechada.",
+    "Mostre sempre as evidências do próprio histórico que sustentam o parecer.",
+    "Não invente fatos ausentes do material.",
+    "Diferencie observação de inferência.",
+    "Responda apenas em JSON válido, sem markdown, com estas chaves:",
+    "resumo_andamento, sinais_avanco, pontos_atencao, hipoteses_compreensao, sugestoes_proxima_conducao, trechos_relevantes, mudanca_percebida",
+    "",
+    `Paciente: ${patientName || "Paciente"}`,
+    `Título da tarefa: ${taskTitle || "Sem título"}`,
+    `Descrição da tarefa: ${taskDescription || "Sem descrição"}`,
+    `Origem da tarefa: ${taskOrigin || "Não informada"}`,
+    `Política de interação: ${taskInteractionPolicy || "Não informada"}`,
+    "",
+    "Trechos relevantes já destacados:",
+    safeSnippets || "Nenhum trecho relevante informado.",
+    "",
+    "Mudança percebida ao longo do tempo:",
+    safeTimeline || "Nenhuma mudança percebida resumida.",
+    "",
+    "Histórico completo das interações:",
+    safeInteractions || "Nenhuma interação registrada.",
+    "",
+    "Regras de formato:",
+    "- resumo_andamento: um parágrafo curto",
+    "- sinais_avanco: array com 2 a 5 itens",
+    "- pontos_atencao: array com 2 a 5 itens",
+    "- hipoteses_compreensao: array com 2 a 5 itens",
+    "- sugestoes_proxima_conducao: array com 2 a 5 itens",
+    "- trechos_relevantes: array com 2 a 5 itens; cada item deve citar o sentido clínico do trecho",
+    "- mudanca_percebida: um parágrafo curto descrevendo o que parece ter mudado ao longo do tempo"
+  ].join("\n");
+}
+
 function slugify(value) {
   return String(value ?? "")
     .normalize("NFD")
@@ -77,6 +140,98 @@ function slugify(value) {
     .replace(/-{2,}/g, "-")
     .replace(/^-|-$/g, "")
     .toLowerCase();
+}
+
+function stripMarkdownCodeFences(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+
+  const fencedMatch = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fencedMatch) {
+    return String(fencedMatch[1] || "").trim();
+  }
+
+  return text;
+}
+
+function tryParseJsonObject(value) {
+  const cleaned = stripMarkdownCodeFences(value);
+  if (!cleaned) return null;
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const firstBrace = cleaned.indexOf("{");
+    const lastBrace = cleaned.lastIndexOf("}");
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+      const possibleJson = cleaned.slice(firstBrace, lastBrace + 1);
+      try {
+        return JSON.parse(possibleJson);
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+function normalizeParecerSectionList(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => String(item || "").trim())
+      .filter(Boolean);
+  }
+
+  const text = String(value || "").trim();
+  if (!text) return [];
+
+  return text
+    .split(/\n+/)
+    .map((item) => item.replace(/^[-•\d.)\s]+/, "").trim())
+    .filter(Boolean);
+}
+
+function normalizeParecerResponse(payload, rawContent = "") {
+  const source = payload && typeof payload === "object" ? payload : {};
+
+  const resumo =
+    String(
+      source.resumo_andamento ??
+        source.resumo ??
+        source.summary ??
+        source.parecer ??
+        ""
+    ).trim();
+
+  const mudanca =
+    String(
+      source.mudanca_percebida ??
+        source.mudancas_percebidas ??
+        source.evolucao_percebida ??
+        ""
+    ).trim();
+
+  const normalized = {
+    resumo_andamento: resumo || String(rawContent || "").trim(),
+    sinais_avanco: normalizeParecerSectionList(
+      source.sinais_avanco ?? source.avancos ?? source.sinais_de_avanco
+    ),
+    pontos_atencao: normalizeParecerSectionList(
+      source.pontos_atencao ?? source.atencao ?? source.pontos_de_atencao
+    ),
+    hipoteses_compreensao: normalizeParecerSectionList(
+      source.hipoteses_compreensao ?? source.hipoteses ?? source.compreensao
+    ),
+    sugestoes_proxima_conducao: normalizeParecerSectionList(
+      source.sugestoes_proxima_conducao ?? source.sugestoes ?? source.proxima_conducao
+    ),
+    trechos_relevantes: normalizeParecerSectionList(
+      source.trechos_relevantes ?? source.evidencias ?? source.trechos
+    ),
+    mudanca_percebida: mudanca || "Sem mudanca percebida registrada."
+  };
+
+  return normalized;
 }
 
 function sanitizePdfText(value) {
@@ -716,6 +871,72 @@ async function chamarOpenAiParaPrevia({ title, description, promptComplement, pa
   }
 }
 
+async function chamarOpenAiParaParecer({
+  patientName,
+  taskTitle,
+  taskDescription,
+  taskOrigin,
+  taskInteractionPolicy,
+  snippets,
+  timelineSummary,
+  interactions,
+  model
+}) {
+  const response = await fetch(OPENAI_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.4,
+      messages: [
+        {
+          role: "system",
+          content:
+            "Você escreve pareceres de andamento de tarefa terapêutica como apoio ao profissional, sem diagnosticar."
+        },
+        {
+          role: "user",
+          content: montarPromptDoParecer({
+            patientName,
+            taskTitle,
+            taskDescription,
+            taskOrigin,
+            taskInteractionPolicy,
+            snippets,
+            timelineSummary,
+            interactions
+          })
+        }
+      ]
+    })
+  });
+
+  const payload = await response.json();
+
+  if (!response.ok) {
+    const apiError =
+      payload?.error?.message || "A OpenAI não conseguiu gerar o parecer neste momento.";
+    throw new Error(apiError);
+  }
+
+  const content = payload?.choices?.[0]?.message?.content?.trim();
+
+  if (!content) {
+    throw new Error("A IA não retornou conteúdo para este parecer.");
+  }
+
+  const parsed = tryParseJsonObject(content);
+
+  if (parsed) {
+    return normalizeParecerResponse(parsed, content);
+  }
+
+  return normalizeParecerResponse({}, stripMarkdownCodeFences(content));
+}
+
 app.post("/api/ai/task-material-preview", async (req, res) => {
   const {
     title = "",
@@ -801,6 +1022,57 @@ app.post("/api/ai/task-material-pdf", async (req, res) => {
     });
   }
 });
+
+async function handleTaskProgressOpinion(req, res) {
+  const {
+    patientName = "",
+    taskTitle = "",
+    taskDescription = "",
+    taskOrigin = "",
+    taskInteractionPolicy = "",
+    snippets = [],
+    timelineSummary = [],
+    interactions = []
+  } = req.body || {};
+
+  if (!taskTitle.trim()) {
+    return res.status(400).json({
+      error: "Informe a tarefa para gerar o parecer."
+    });
+  }
+
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(503).json({
+      error: "A chave da OpenAI ainda não foi configurada no backend."
+    });
+  }
+
+  const model = process.env.OPENAI_TASKS_MODEL || process.env.OPENAI_MODEL || "gpt-5.4-mini";
+
+  try {
+    const parecer = await chamarOpenAiParaParecer({
+      patientName: patientName.trim(),
+      taskTitle: taskTitle.trim(),
+      taskDescription: taskDescription.trim(),
+      taskOrigin: taskOrigin.trim(),
+      taskInteractionPolicy: taskInteractionPolicy.trim(),
+      snippets: Array.isArray(snippets) ? snippets : [],
+      timelineSummary: Array.isArray(timelineSummary) ? timelineSummary : [],
+      interactions: Array.isArray(interactions) ? interactions : [],
+      model
+    });
+
+    return res.json({ parecer });
+  } catch (error) {
+    console.error("Erro ao gerar parecer com IA:", error);
+    return res.status(500).json({
+      error: error.message || "Não foi possível gerar o parecer com IA."
+    });
+  }
+}
+
+app.post("/api/ai/task-progress-opinion", handleTaskProgressOpinion);
+app.post("/api/ai/task-parecer", handleTaskProgressOpinion);
 
 const PORT = process.env.PORT || 3000;
 
