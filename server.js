@@ -175,14 +175,57 @@ function tryParseJsonObject(value) {
   }
 }
 
+function extractParecerText(value) {
+  if (typeof value === "string") {
+    return value.trim();
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => extractParecerText(item))
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+  }
+
+  if (value && typeof value === "object") {
+    const candidateKeys = [
+      "text",
+      "content",
+      "output_text",
+      "response",
+      "message",
+      "result",
+      "value",
+      "body"
+    ];
+
+    for (const key of candidateKeys) {
+      const extracted = extractParecerText(value[key]);
+      if (extracted) return extracted;
+    }
+
+    const nestedValues = Object.values(value)
+      .map((item) => extractParecerText(item))
+      .filter(Boolean);
+
+    if (nestedValues.length) {
+      return nestedValues.join(" ").trim();
+    }
+  }
+
+  return "";
+}
+
 function normalizeParecerSectionList(value) {
   if (Array.isArray(value)) {
     return value
+      .map((item) => extractParecerText(item))
       .map((item) => String(item || "").trim())
       .filter(Boolean);
   }
 
-  const text = String(value || "").trim();
+  const text = extractParecerText(value);
   if (!text) return [];
 
   return text
