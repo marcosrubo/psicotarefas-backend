@@ -14,6 +14,7 @@ app.use(cors());
 app.use(express.json({ limit: "25mb" }));
 
 const OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions";
+const OPENAI_IMAGE_ENDPOINT = "https://api.openai.com/v1/images/generations";
 const TASK_PDF_BUCKET = process.env.TASK_PDF_BUCKET || "banco-tarefas-pdf";
 const TASK_PDF_PREVIEW_BUCKET = process.env.TASK_PDF_PREVIEW_BUCKET || "banco-tarefas-preview";
 const PDF_STANDARD_FONTS_URL = new URL("./node_modules/pdfjs-dist/standard_fonts/", import.meta.url).toString();
@@ -130,6 +131,46 @@ function montarPromptDoParecer({
     "- trechos_relevantes: array com 2 a 5 itens; cada item deve citar o sentido clínico do trecho",
     "- mudanca_percebida: um parágrafo curto descrevendo o que parece ter mudado ao longo do tempo"
   ].join("\n");
+}
+
+function montarPromptDoInfografico({ tema, personagem, observacoes }) {
+  return [
+    "Você cria conteúdo para um infográfico terapêutico psicoeducativo.",
+    "O conteúdo será revisado por profissional. Não diagnostique, não prometa cura e não substitua atendimento.",
+    "Use português do Brasil, linguagem acolhedora, clara e útil para celular.",
+    "Responda apenas em JSON válido, sem markdown, com estas chaves:",
+    "tarefa, titulo, contexto, faixa_amarela, desafios, perguntas_reflexao, o_que_pode_ajudar, frase_final",
+    "",
+    `Tema: ${tema}`,
+    `Personagem escolhido: ${personagem}`,
+    observacoes ? `Observações da profissional: ${observacoes}` : "Observações da profissional: nenhuma",
+    "",
+    "Regras fixas:",
+    "- tarefa: sempre 'TAREFA 5'",
+    "- titulo: até 7 palavras",
+    "- contexto: 2 frases curtas, acolhedoras e práticas",
+    "- faixa_amarela: uma chamada curta com até 8 palavras",
+    "- desafios: array com exatamente 6 itens; cada item com até 3 palavras",
+    "- perguntas_reflexao: array com exatamente 3 perguntas curtas",
+    "- o_que_pode_ajudar: array com exatamente 4 itens curtos",
+    "- frase_final: uma frase acolhedora com até 14 palavras"
+  ].join("\n");
+}
+
+function montarPromptDaImagemDoInfografico({ tema, personagem, observacoes }) {
+  return [
+    "Create a therapeutic illustration for a mental health infographic.",
+    "No text, no letters, no watermark, no logos.",
+    "Subject:",
+    `${personagem} dealing with ${tema} in a calm, supportive, non-clinical environment.`,
+    observacoes ? `Context note: ${observacoes}.` : "",
+    "Style: polished Canva-like digital illustration, warm and accessible, soft rounded shapes, gentle facial expression.",
+    "Composition: centered character, generous clean background, vertical portrait, suitable for insertion into a fixed infographic template.",
+    "Palette: white, purple #6F2DBD, deep blue #1E3A8A, soft blue #E8F0FF, small green accents #16A34A.",
+    "Avoid: photorealism, scary mood, medical equipment, hospital scene, text, captions, diagnosis labels."
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function slugify(value) {
@@ -980,6 +1021,97 @@ async function chamarOpenAiParaParecer({
   return normalizeParecerResponse({}, stripMarkdownCodeFences(content));
 }
 
+async function chamarOpenAiParaInfografico({ tema, personagem, observacoes, model }) {
+  const response = await fetch(OPENAI_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.55,
+      messages: [
+        {
+          role: "system",
+          content:
+            "Você gera conteúdo terapêutico psicoeducativo em JSON válido para ser diagramado em template fixo."
+        },
+        {
+          role: "user",
+          content: montarPromptDoInfografico({ tema, personagem, observacoes })
+        }
+      ]
+    })
+  });
+
+  const payload = await response.json();
+
+  if (!response.ok) {
+    const apiError =
+      payload?.error?.message || "A OpenAI não conseguiu gerar o conteúdo do infográfico.";
+    throw new Error(apiError);
+  }
+
+  const content = payload?.choices?.[0]?.message?.content?.trim();
+  const parsed = tryParseJsonObject(content);
+
+  if (!parsed) {
+    throw new Error("A IA não retornou JSON válido para o infográfico.");
+  }
+
+  return {
+    tarefa: String(parsed.tarefa || "TAREFA 5").trim(),
+    titulo: String(parsed.titulo || `Trabalhando ${tema}`).trim(),
+    contexto: String(parsed.contexto || "").trim(),
+    faixa_amarela: String(parsed.faixa_amarela || `Desafios de ${tema}`).trim(),
+    desafios: normalizeParecerSectionList(parsed.desafios).slice(0, 6),
+    perguntas_reflexao: normalizeParecerSectionList(parsed.perguntas_reflexao).slice(0, 3),
+    o_que_pode_ajudar: normalizeParecerSectionList(parsed.o_que_pode_ajudar).slice(0, 4),
+    frase_final: String(parsed.frase_final || "").trim()
+  };
+}
+
+async function chamarOpenAiParaImagemInfografico({ tema, personagem, observacoes, quality }) {
+  const model = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
+  const response = await fetch(OPENAI_IMAGE_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model,
+      prompt: montarPromptDaImagemDoInfografico({ tema, personagem, observacoes }),
+      size: process.env.OPENAI_INFOGRAPHIC_IMAGE_SIZE || "1024x1536",
+      quality,
+      n: 1
+    })
+  });
+
+  const payload = await response.json();
+
+  if (!response.ok) {
+    const apiError =
+      payload?.error?.message || "A OpenAI não conseguiu gerar a imagem do infográfico.";
+    throw new Error(apiError);
+  }
+
+  const imageData = payload?.data?.[0] || {};
+  const base64 = imageData.b64_json || "";
+  const imageUrl = imageData.url || "";
+
+  if (base64) {
+    return `data:image/png;base64,${base64}`;
+  }
+
+  if (imageUrl) {
+    return imageUrl;
+  }
+
+  throw new Error("A IA não retornou uma imagem válida.");
+}
+
 app.post("/api/ai/task-material-preview", async (req, res) => {
   const {
     title = "",
@@ -1062,6 +1194,64 @@ app.post("/api/ai/task-material-pdf", async (req, res) => {
     console.error("Erro ao gerar PDF da tarefa com IA:", error);
     return res.status(500).json({
       error: error.message || "Não foi possível gerar o PDF da tarefa com IA."
+    });
+  }
+});
+
+app.post("/api/ai/meu-infografico", async (req, res) => {
+  const {
+    tema = "",
+    personagem = "",
+    observacoes = "",
+    qualidade = "medium"
+  } = req.body || {};
+
+  const temaNormalizado = String(tema || "").trim();
+  const personagemNormalizado = String(personagem || "").trim();
+  const observacoesNormalizadas = String(observacoes || "").trim();
+  const qualidadeNormalizada = ["low", "medium", "high"].includes(String(qualidade))
+    ? String(qualidade)
+    : "medium";
+
+  if (!temaNormalizado || !personagemNormalizado) {
+    return res.status(400).json({
+      error: "Informe tema e personagem para gerar o infográfico."
+    });
+  }
+
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(503).json({
+      error: "A chave da OpenAI ainda não foi configurada no backend."
+    });
+  }
+
+  const model = process.env.OPENAI_TASKS_MODEL || process.env.OPENAI_MODEL || "gpt-5.4-mini";
+
+  try {
+    const [conteudo, imagemUrl] = await Promise.all([
+      chamarOpenAiParaInfografico({
+        tema: temaNormalizado,
+        personagem: personagemNormalizado,
+        observacoes: observacoesNormalizadas,
+        model
+      }),
+      chamarOpenAiParaImagemInfografico({
+        tema: temaNormalizado,
+        personagem: personagemNormalizado,
+        observacoes: observacoesNormalizadas,
+        quality: qualidadeNormalizada
+      })
+    ]);
+
+    return res.json({
+      conteudo,
+      imagemUrl,
+      qualidade: qualidadeNormalizada
+    });
+  } catch (error) {
+    console.error("Erro ao gerar meu infográfico:", error);
+    return res.status(500).json({
+      error: error.message || "Não foi possível gerar o infográfico."
     });
   }
 });
