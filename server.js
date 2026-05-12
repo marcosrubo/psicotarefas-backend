@@ -1093,6 +1093,25 @@ async function chamarOpenAiParaInfografico({ tema, personagem, observacoes, mode
   };
 }
 
+function aplicarCaixaAltaNoInfografico(conteudo) {
+  const upper = (value) => String(value || "").trim().toLocaleUpperCase("pt-BR");
+
+  return {
+    tarefa: upper(conteudo?.tarefa),
+    titulo: upper(conteudo?.titulo),
+    contexto: upper(conteudo?.contexto),
+    faixa_amarela: upper(conteudo?.faixa_amarela),
+    desafios: Array.isArray(conteudo?.desafios) ? conteudo.desafios.map(upper) : [],
+    perguntas_reflexao: Array.isArray(conteudo?.perguntas_reflexao)
+      ? conteudo.perguntas_reflexao.map(upper)
+      : [],
+    o_que_pode_ajudar: Array.isArray(conteudo?.o_que_pode_ajudar)
+      ? conteudo.o_que_pode_ajudar.map(upper)
+      : [],
+    frase_final: upper(conteudo?.frase_final)
+  };
+}
+
 async function chamarOpenAiParaImagemInfografico({ tema, personagem, observacoes, quality }) {
   const model = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
   const response = await fetch(OPENAI_IMAGE_ENDPOINT, {
@@ -1224,7 +1243,8 @@ app.post("/api/ai/meu-infografico", async (req, res) => {
     tema = "",
     personagem = "",
     observacoes = "",
-    qualidade = "low"
+    qualidade = "low",
+    caixaAlta = true
   } = req.body || {};
 
   const temaNormalizado = String(tema || "").trim();
@@ -1233,6 +1253,7 @@ app.post("/api/ai/meu-infografico", async (req, res) => {
   const qualidadeNormalizada = ["low", "medium", "high"].includes(String(qualidade))
     ? String(qualidade)
     : "low";
+  const deveUsarCaixaAlta = caixaAlta !== false;
 
   if (!temaNormalizado || !personagemNormalizado) {
     return res.status(400).json({
@@ -1249,7 +1270,7 @@ app.post("/api/ai/meu-infografico", async (req, res) => {
   const model = process.env.OPENAI_TASKS_MODEL || process.env.OPENAI_MODEL || "gpt-5.4-mini";
 
   try {
-    const [conteudo, imagemUrl] = await Promise.all([
+    const [conteudoGerado, imagemUrl] = await Promise.all([
       chamarOpenAiParaInfografico({
         tema: temaNormalizado,
         personagem: personagemNormalizado,
@@ -1263,11 +1284,15 @@ app.post("/api/ai/meu-infografico", async (req, res) => {
         quality: qualidadeNormalizada
       })
     ]);
+    const conteudo = deveUsarCaixaAlta
+      ? aplicarCaixaAltaNoInfografico(conteudoGerado)
+      : conteudoGerado;
 
     return res.json({
       conteudo,
       imagemUrl,
-      qualidade: qualidadeNormalizada
+      qualidade: qualidadeNormalizada,
+      caixaAlta: deveUsarCaixaAlta
     });
   } catch (error) {
     console.error("Erro ao gerar meu infográfico:", error);
