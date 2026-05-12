@@ -157,17 +157,35 @@ function montarPromptDoInfografico({ tema, personagem, observacoes }) {
   ].join("\n");
 }
 
-function montarPromptDaImagemDoInfografico({ tema, personagem, observacoes }) {
+function montarPromptDaImagemDoInfografico({ tema, personagem, observacoes, quality }) {
+  const styleByQuality = {
+    low: [
+      "Style: simple flat digital illustration, clean Canva-like drawing, soft rounded shapes, minimal details, friendly colors.",
+      "Avoid: photorealism, 3D render, cinematic lighting, overly detailed backgrounds."
+    ],
+    medium: [
+      "Style: premium 3D animated movie look, expressive character, soft cinematic lighting, rounded forms, warm emotional tone, polished but still family-friendly.",
+      "Avoid: flat vector style, photorealism, brand-specific character styles, text, logos."
+    ],
+    high: [
+      "Style: photorealistic professional lifestyle photography, natural light, real human emotion, realistic environment, shallow depth of field, editorial quality.",
+      "Avoid: illustration, cartoon, 3D render, plastic skin, exaggerated expressions, text, logos."
+    ]
+  };
+  const styleRules = styleByQuality[quality] || styleByQuality.low;
+
   return [
-    "Create a therapeutic illustration for a mental health infographic.",
+    quality === "high"
+      ? "Create a therapeutic photorealistic image for a mental health infographic."
+      : "Create a therapeutic image for a mental health infographic.",
     "No text, no letters, no watermark, no logos.",
     "Subject:",
     `${personagem} dealing with ${tema} in a calm, supportive, non-clinical environment.`,
     observacoes ? `Context note: ${observacoes}.` : "",
-    "Style: polished Canva-like digital illustration, warm and accessible, soft rounded shapes, gentle facial expression.",
-    "Composition: horizontal landscape illustration, 3:2 aspect ratio, character visible from waist up, generous scene context, suitable for a wide top banner inside a fixed infographic template.",
+    ...styleRules,
+    "Composition: horizontal landscape image, 3:2 aspect ratio, character visible from waist up, generous scene context, suitable for a wide top banner inside a fixed infographic template.",
     "Palette: white, purple #6F2DBD, deep blue #1E3A8A, soft blue #E8F0FF, small green accents #16A34A.",
-    "Avoid: photorealism, scary mood, medical equipment, hospital scene, text, captions, diagnosis labels."
+    "Avoid: scary mood, medical equipment, hospital scene, captions, diagnosis labels."
   ]
     .filter(Boolean)
     .join("\n");
@@ -1082,7 +1100,7 @@ async function chamarOpenAiParaImagemInfografico({ tema, personagem, observacoes
     },
     body: JSON.stringify({
       model,
-      prompt: montarPromptDaImagemDoInfografico({ tema, personagem, observacoes }),
+      prompt: montarPromptDaImagemDoInfografico({ tema, personagem, observacoes, quality }),
       size: process.env.OPENAI_INFOGRAPHIC_IMAGE_SIZE || "1536x1024",
       quality,
       n: 1
@@ -1203,7 +1221,7 @@ app.post("/api/ai/meu-infografico", async (req, res) => {
     tema = "",
     personagem = "",
     observacoes = "",
-    qualidade = "medium"
+    qualidade = "low"
   } = req.body || {};
 
   const temaNormalizado = String(tema || "").trim();
@@ -1211,7 +1229,7 @@ app.post("/api/ai/meu-infografico", async (req, res) => {
   const observacoesNormalizadas = String(observacoes || "").trim();
   const qualidadeNormalizada = ["low", "medium", "high"].includes(String(qualidade))
     ? String(qualidade)
-    : "medium";
+    : "low";
 
   if (!temaNormalizado || !personagemNormalizado) {
     return res.status(400).json({
