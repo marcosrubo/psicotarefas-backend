@@ -152,7 +152,7 @@ function montarPromptDoInfografico({ tema, personagem, observacoes }) {
     "- faixa_amarela: uma chamada curta com até 8 palavras",
     "- desafios: array com exatamente 6 itens; cada item com até 3 palavras",
     "- perguntas_reflexao: array com exatamente 3 perguntas curtas",
-    "- o_que_pode_ajudar: array com exatamente 4 itens curtos",
+    "- o_que_pode_ajudar: array com exatamente 6 itens curtos",
     "- frase_final: uma frase acolhedora com até 14 palavras"
   ].join("\n");
 }
@@ -1067,7 +1067,7 @@ async function chamarOpenAiParaInfografico({ tema, personagem, observacoes, mode
     faixa_amarela: String(parsed.faixa_amarela || `Desafios de ${tema}`).trim(),
     desafios: normalizeParecerSectionList(parsed.desafios).slice(0, 6),
     perguntas_reflexao: normalizeParecerSectionList(parsed.perguntas_reflexao).slice(0, 3),
-    o_que_pode_ajudar: normalizeParecerSectionList(parsed.o_que_pode_ajudar).slice(0, 4),
+    o_que_pode_ajudar: normalizeParecerSectionList(parsed.o_que_pode_ajudar).slice(0, 6),
     frase_final: String(parsed.frase_final || "").trim()
   };
 }
