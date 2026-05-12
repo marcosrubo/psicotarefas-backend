@@ -165,7 +165,7 @@ function montarPromptDaImagemDoInfografico({ tema, personagem, observacoes }) {
     `${personagem} dealing with ${tema} in a calm, supportive, non-clinical environment.`,
     observacoes ? `Context note: ${observacoes}.` : "",
     "Style: polished Canva-like digital illustration, warm and accessible, soft rounded shapes, gentle facial expression.",
-    "Composition: horizontal landscape illustration, 16:10 aspect ratio feel, character visible from waist up, generous scene context, suitable for a wide top banner inside a fixed infographic template.",
+    "Composition: horizontal landscape illustration, 3:2 aspect ratio, character visible from waist up, generous scene context, suitable for a wide top banner inside a fixed infographic template.",
     "Palette: white, purple #6F2DBD, deep blue #1E3A8A, soft blue #E8F0FF, small green accents #16A34A.",
     "Avoid: photorealism, scary mood, medical equipment, hospital scene, text, captions, diagnosis labels."
   ]
@@ -1083,7 +1083,7 @@ async function chamarOpenAiParaImagemInfografico({ tema, personagem, observacoes
     body: JSON.stringify({
       model,
       prompt: montarPromptDaImagemDoInfografico({ tema, personagem, observacoes }),
-      size: process.env.OPENAI_INFOGRAPHIC_IMAGE_SIZE || "1024x1536",
+      size: process.env.OPENAI_INFOGRAPHIC_IMAGE_SIZE || "1536x1024",
       quality,
       n: 1
     })
