@@ -1108,7 +1108,8 @@ function aplicarCaixaAltaNoInfografico(conteudo) {
     o_que_pode_ajudar: Array.isArray(conteudo?.o_que_pode_ajudar)
       ? conteudo.o_que_pode_ajudar.map(upper)
       : [],
-    frase_final: upper(conteudo?.frase_final)
+    frase_final: upper(conteudo?.frase_final),
+    texto_complementar: upper(conteudo?.texto_complementar)
   };
 }
 
@@ -1243,6 +1244,7 @@ app.post("/api/ai/meu-infografico", async (req, res) => {
     tema = "",
     personagem = "",
     observacoes = "",
+    textoComplementar = "",
     qualidade = "low",
     caixaAlta = true
   } = req.body || {};
@@ -1250,6 +1252,7 @@ app.post("/api/ai/meu-infografico", async (req, res) => {
   const temaNormalizado = String(tema || "").trim();
   const personagemNormalizado = String(personagem || "").trim();
   const observacoesNormalizadas = String(observacoes || "").trim();
+  const textoComplementarNormalizado = String(textoComplementar || "").trim();
   const qualidadeNormalizada = ["low", "medium", "high"].includes(String(qualidade))
     ? String(qualidade)
     : "low";
@@ -1284,9 +1287,13 @@ app.post("/api/ai/meu-infografico", async (req, res) => {
         quality: qualidadeNormalizada
       })
     ]);
+    const conteudoComComplemento = {
+      ...conteudoGerado,
+      texto_complementar: textoComplementarNormalizado
+    };
     const conteudo = deveUsarCaixaAlta
-      ? aplicarCaixaAltaNoInfografico(conteudoGerado)
-      : conteudoGerado;
+      ? aplicarCaixaAltaNoInfografico(conteudoComComplemento)
+      : conteudoComComplemento;
 
     return res.json({
       conteudo,
