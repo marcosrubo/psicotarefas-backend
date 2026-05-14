@@ -7,6 +7,9 @@ import { createCanvas } from "@napi-rs/canvas";
 import { createClient } from "@supabase/supabase-js";
 import {
   SENSITIVE_CRYPTO_ENV_VAR,
+  decryptTaskSensitiveFields,
+  decryptTaskSensitiveRows,
+  encryptTaskSensitiveFields,
   isSensitiveCryptoConfigured
 } from "./sensitive-crypto.js";
 
@@ -39,8 +42,345 @@ if (!isSensitiveCryptoConfigured()) {
   );
 }
 
+function getBearerToken(req) {
+  const authorization = String(req.headers.authorization || "");
+  const [type, token] = authorization.split(" ");
+
+  if (!/^bearer$/iu.test(type) || !token) {
+    return "";
+  }
+
+  return token.trim();
+}
+
+async function getAuthenticatedUser(req) {
+  if (!supabaseAdmin) {
+    throw Object.assign(new Error("Supabase Admin não configurado no backend."), {
+      statusCode: 503
+    });
+  }
+
+  const token = getBearerToken(req);
+
+  if (!token) {
+    throw Object.assign(new Error("Sessão não informada."), {
+      statusCode: 401
+    });
+  }
+
+  const { data, error } = await supabaseAdmin.auth.getUser(token);
+
+  if (error || !data?.user) {
+    throw Object.assign(new Error("Sessão inválida ou expirada."), {
+      statusCode: 401
+    });
+  }
+
+  return data.user;
+}
+
+async function getUserProfile(userId) {
+  const { data, error } = await supabaseAdmin
+    .from("perfis")
+    .select("user_id, perfil, nome, email")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data || null;
+}
+
+async function requireProfessionalProfile(userId) {
+  const profile = await getUserProfile(userId);
+
+  if (profile?.perfil !== "profissional") {
+    throw Object.assign(new Error("Acesso permitido apenas para profissionais."), {
+      statusCode: 403
+    });
+  }
+
+  return profile;
+}
+
+async function verifyActiveProfessionalLink({ professionalUserId, patientUserId, vinculoId }) {
+  let query = supabaseAdmin
+    .from("vinculos")
+    .select("id, professional_user_id, patient_user_id, status")
+    .eq("professional_user_id", professionalUserId)
+    .eq("patient_user_id", patientUserId)
+    .eq("status", "ativo");
+
+  if (vinculoId !== null && vinculoId !== undefined && String(vinculoId).trim()) {
+    query = query.eq("id", vinculoId);
+  }
+
+  const { data, error } = await query.maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
+    throw Object.assign(new Error("Vínculo ativo não encontrado para criar a tarefa."), {
+      statusCode: 403
+    });
+  }
+
+  return data;
+}
+
+function handleApiError(res, error, fallbackMessage = "Erro inesperado.") {
+  const statusCode = Number(error?.statusCode) || 500;
+
+  if (statusCode >= 500) {
+    console.error(error);
+  }
+
+  return res.status(statusCode).json({
+    error: error?.message || fallbackMessage
+  });
+}
+
+function normalizeTaskPayload(payload = {}) {
+  const allowedFields = [
+    "professional_user_id",
+    "patient_user_id",
+    "vinculo_id",
+    "titulo",
+    "descricao",
+    "status",
+    "interacao_paciente_tipo",
+    "interacao_paciente_limite",
+    "origem_tipo",
+    "origem_banco_tarefa_id",
+    "pdf_path",
+    "pdf_nome",
+    "video_url"
+  ];
+
+  return allowedFields.reduce((result, field) => {
+    if (Object.prototype.hasOwnProperty.call(payload, field)) {
+      result[field] = payload[field];
+    }
+
+    return result;
+  }, {});
+}
+
 app.get("/", (req, res) => {
   res.send("API PsicoTarefas rodando 🚀");
+});
+
+app.get("/api/tasks/professional", async (req, res) => {
+  try {
+    const user = await getAuthenticatedUser(req);
+    await requireProfessionalProfile(user.id);
+
+    let query = supabaseAdmin
+      .from("tarefas")
+      .select("*")
+      .eq("professional_user_id", user.id)
+      .order("created_at", { ascending: false });
+
+    const patientUserId = String(req.query.patient_user_id || "").trim();
+
+    if (patientUserId) {
+      query = query.eq("patient_user_id", patientUserId);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      throw error;
+    }
+
+    return res.json({ tasks: decryptTaskSensitiveRows(data || []) });
+  } catch (error) {
+    return handleApiError(res, error, "Não foi possível carregar as tarefas.");
+  }
+});
+
+app.get("/api/tasks/patient", async (req, res) => {
+  try {
+    const user = await getAuthenticatedUser(req);
+
+    const { data, error } = await supabaseAdmin
+      .from("tarefas")
+      .select("*")
+      .eq("patient_user_id", user.id)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      throw error;
+    }
+
+    return res.json({ tasks: decryptTaskSensitiveRows(data || []) });
+  } catch (error) {
+    return handleApiError(res, error, "Não foi possível carregar as tarefas.");
+  }
+});
+
+app.get("/api/tasks/:taskId", async (req, res) => {
+  try {
+    const user = await getAuthenticatedUser(req);
+    const taskId = String(req.params.taskId || "").trim();
+
+    if (!taskId) {
+      return res.status(400).json({ error: "Tarefa não informada." });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from("tarefas")
+      .select("*")
+      .eq("id", taskId)
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    if (!data) {
+      return res.status(404).json({ error: "Tarefa não encontrada." });
+    }
+
+    const isProfessionalOwner = data.professional_user_id === user.id;
+    const isPatientOwner = data.patient_user_id === user.id;
+
+    if (!isProfessionalOwner && !isPatientOwner) {
+      return res.status(403).json({ error: "Você não tem acesso a esta tarefa." });
+    }
+
+    return res.json({ task: decryptTaskSensitiveFields(data) });
+  } catch (error) {
+    return handleApiError(res, error, "Não foi possível carregar a tarefa.");
+  }
+});
+
+app.post("/api/tasks", async (req, res) => {
+  try {
+    const user = await getAuthenticatedUser(req);
+    await requireProfessionalProfile(user.id);
+
+    const payload = normalizeTaskPayload(req.body || {});
+    payload.professional_user_id = user.id;
+
+    const patientUserId = String(payload.patient_user_id || "").trim();
+    const titulo = String(payload.titulo || "").trim();
+
+    if (!patientUserId) {
+      return res.status(400).json({ error: "Paciente não informado para a tarefa." });
+    }
+
+    if (!titulo) {
+      return res.status(400).json({ error: "Informe o título da tarefa." });
+    }
+
+    const vinculo = await verifyActiveProfessionalLink({
+      professionalUserId: user.id,
+      patientUserId,
+      vinculoId: payload.vinculo_id
+    });
+
+    payload.patient_user_id = patientUserId;
+    payload.vinculo_id = vinculo.id;
+    payload.titulo = titulo;
+
+    if (Object.prototype.hasOwnProperty.call(payload, "descricao")) {
+      payload.descricao =
+        payload.descricao === null || payload.descricao === undefined
+          ? payload.descricao
+          : String(payload.descricao).trim();
+    }
+
+    const encryptedPayload = encryptTaskSensitiveFields(payload);
+
+    const { data, error } = await supabaseAdmin
+      .from("tarefas")
+      .insert(encryptedPayload)
+      .select()
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return res.status(201).json({ task: decryptTaskSensitiveFields(data) });
+  } catch (error) {
+    return handleApiError(res, error, "Não foi possível criar a tarefa.");
+  }
+});
+
+app.patch("/api/tasks/:taskId", async (req, res) => {
+  try {
+    const user = await getAuthenticatedUser(req);
+    await requireProfessionalProfile(user.id);
+
+    const taskId = String(req.params.taskId || "").trim();
+
+    if (!taskId) {
+      return res.status(400).json({ error: "Tarefa não informada." });
+    }
+
+    const { data: currentTask, error: currentTaskError } = await supabaseAdmin
+      .from("tarefas")
+      .select("id, professional_user_id")
+      .eq("id", taskId)
+      .maybeSingle();
+
+    if (currentTaskError) {
+      throw currentTaskError;
+    }
+
+    if (!currentTask) {
+      return res.status(404).json({ error: "Tarefa não encontrada." });
+    }
+
+    if (currentTask.professional_user_id !== user.id) {
+      return res.status(403).json({ error: "Você não pode alterar esta tarefa." });
+    }
+
+    const payload = normalizeTaskPayload(req.body || {});
+    delete payload.professional_user_id;
+    delete payload.patient_user_id;
+    delete payload.vinculo_id;
+    delete payload.origem_tipo;
+    delete payload.origem_banco_tarefa_id;
+
+    if (Object.prototype.hasOwnProperty.call(payload, "titulo")) {
+      payload.titulo = String(payload.titulo || "").trim();
+
+      if (!payload.titulo) {
+        return res.status(400).json({ error: "Informe o título da tarefa." });
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(payload, "descricao")) {
+      payload.descricao =
+        payload.descricao === null || payload.descricao === undefined
+          ? payload.descricao
+          : String(payload.descricao).trim();
+    }
+
+    const encryptedPayload = encryptTaskSensitiveFields(payload);
+
+    const { data, error } = await supabaseAdmin
+      .from("tarefas")
+      .update(encryptedPayload)
+      .eq("id", taskId)
+      .select()
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return res.json({ task: decryptTaskSensitiveFields(data) });
+  } catch (error) {
+    return handleApiError(res, error, "Não foi possível alterar a tarefa.");
+  }
 });
 
 function montarPromptDaTarefa({ title, description, promptComplement, parameters = {} }) {
