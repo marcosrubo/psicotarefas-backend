@@ -5,6 +5,10 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { createCanvas } from "@napi-rs/canvas";
 import { createClient } from "@supabase/supabase-js";
+import {
+  SENSITIVE_CRYPTO_ENV_VAR,
+  isSensitiveCryptoConfigured
+} from "./sensitive-crypto.js";
 
 dotenv.config();
 
@@ -28,6 +32,12 @@ const supabaseAdmin =
         }
       })
     : null;
+
+if (!isSensitiveCryptoConfigured()) {
+  console.warn(
+    `[security] ${SENSITIVE_CRYPTO_ENV_VAR} nao configurada. Rotas futuras de dados sensiveis devem bloquear leitura e gravacao criptografada ate a chave existir no backend.`
+  );
+}
 
 app.get("/", (req, res) => {
   res.send("API PsicoTarefas rodando 🚀");
