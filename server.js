@@ -7,8 +7,11 @@ import { createCanvas } from "@napi-rs/canvas";
 import { createClient } from "@supabase/supabase-js";
 import {
   SENSITIVE_CRYPTO_ENV_VAR,
+  decryptInteractionSensitiveFields,
+  decryptInteractionSensitiveRows,
   decryptTaskSensitiveFields,
   decryptTaskSensitiveRows,
+  encryptInteractionSensitiveFields,
   encryptTaskSensitiveFields,
   isSensitiveCryptoConfigured
 } from "./sensitive-crypto.js";
@@ -168,6 +171,98 @@ function normalizeTaskPayload(payload = {}) {
 
     return result;
   }, {});
+}
+
+function normalizeInteractionPayload(payload = {}) {
+  const allowedFields = ["tarefa_id", "autor_tipo", "autor_user_id", "mensagem"];
+
+  return allowedFields.reduce((result, field) => {
+    if (Object.prototype.hasOwnProperty.call(payload, field)) {
+      result[field] = payload[field];
+    }
+
+    return result;
+  }, {});
+}
+
+function normalizePatientInteractionType(value) {
+  if (value === "limitado" || value === "ilimitado") return value;
+  return "nao_permitir";
+}
+
+function normalizePatientInteractionLimit(type, value) {
+  if (type !== "limitado") return null;
+
+  const number = Number.parseInt(String(value || "1"), 10);
+  return Number.isFinite(number) && number > 0 ? number : 1;
+}
+
+async function getAccessibleTaskForUser(userId, taskId) {
+  const { data, error } = await supabaseAdmin
+    .from("tarefas")
+    .select("*")
+    .eq("id", taskId)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
+    throw Object.assign(new Error("Tarefa não encontrada."), {
+      statusCode: 404
+    });
+  }
+
+  const isProfessionalOwner = data.professional_user_id === userId;
+  const isPatientOwner = data.patient_user_id === userId;
+
+  if (!isProfessionalOwner && !isPatientOwner) {
+    throw Object.assign(new Error("Você não tem acesso a esta tarefa."), {
+      statusCode: 403
+    });
+  }
+
+  return {
+    task: data,
+    role: isProfessionalOwner ? "profissional" : "paciente"
+  };
+}
+
+async function assertPatientCanCreateInteraction(task) {
+  if (task.status === "encerrada") {
+    throw Object.assign(new Error("Esta tarefa está encerrada e não recebe novas interações."), {
+      statusCode: 403
+    });
+  }
+
+  const type = normalizePatientInteractionType(task.interacao_paciente_tipo);
+  const limit = normalizePatientInteractionLimit(type, task.interacao_paciente_limite);
+
+  if (type === "nao_permitir") {
+    throw Object.assign(new Error("Esta tarefa não permite novas interações do paciente."), {
+      statusCode: 403
+    });
+  }
+
+  if (type !== "limitado") {
+    return;
+  }
+
+  const { count, error } = await supabaseAdmin
+    .from("tarefa_interacoes")
+    .select("id", { count: "exact", head: true })
+    .eq("tarefa_id", task.id);
+
+  if (error) {
+    throw error;
+  }
+
+  if ((count || 0) >= limit) {
+    throw Object.assign(new Error(`Esta tarefa já atingiu o limite de ${limit} interação(ões).`), {
+      statusCode: 403
+    });
+  }
 }
 
 app.get("/", (req, res) => {
@@ -380,6 +475,141 @@ app.patch("/api/tasks/:taskId", async (req, res) => {
     return res.json({ task: decryptTaskSensitiveFields(data) });
   } catch (error) {
     return handleApiError(res, error, "Não foi possível alterar a tarefa.");
+  }
+});
+
+app.get("/api/tasks/:taskId/interactions", async (req, res) => {
+  try {
+    const user = await getAuthenticatedUser(req);
+    const taskId = String(req.params.taskId || "").trim();
+
+    if (!taskId) {
+      return res.status(400).json({ error: "Tarefa não informada." });
+    }
+
+    await getAccessibleTaskForUser(user.id, taskId);
+
+    const { data, error } = await supabaseAdmin
+      .from("tarefa_interacoes")
+      .select("*")
+      .eq("tarefa_id", taskId)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      throw error;
+    }
+
+    return res.json({ interactions: decryptInteractionSensitiveRows(data || []) });
+  } catch (error) {
+    return handleApiError(res, error, "Não foi possível carregar as interações.");
+  }
+});
+
+app.post("/api/tasks/:taskId/interactions", async (req, res) => {
+  try {
+    const user = await getAuthenticatedUser(req);
+    const taskId = String(req.params.taskId || "").trim();
+
+    if (!taskId) {
+      return res.status(400).json({ error: "Tarefa não informada." });
+    }
+
+    const { task, role } = await getAccessibleTaskForUser(user.id, taskId);
+    const payload = normalizeInteractionPayload(req.body || {});
+    const mensagem = String(payload.mensagem || "").trim();
+
+    if (!mensagem) {
+      return res.status(400).json({ error: "Digite a mensagem antes de enviar." });
+    }
+
+    if (role === "paciente") {
+      await assertPatientCanCreateInteraction(task);
+    }
+
+    payload.tarefa_id = task.id;
+    payload.autor_tipo = role;
+    payload.autor_user_id = user.id;
+    payload.mensagem = mensagem;
+
+    const encryptedPayload = encryptInteractionSensitiveFields(payload);
+
+    const { data, error } = await supabaseAdmin
+      .from("tarefa_interacoes")
+      .insert(encryptedPayload)
+      .select()
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return res.status(201).json({ interaction: decryptInteractionSensitiveFields(data) });
+  } catch (error) {
+    return handleApiError(res, error, "Não foi possível criar a interação.");
+  }
+});
+
+app.patch("/api/tasks/:taskId/interactions/:interactionId", async (req, res) => {
+  try {
+    const user = await getAuthenticatedUser(req);
+    const taskId = String(req.params.taskId || "").trim();
+    const interactionId = String(req.params.interactionId || "").trim();
+
+    if (!taskId || !interactionId) {
+      return res.status(400).json({ error: "Interação não informada." });
+    }
+
+    await getAccessibleTaskForUser(user.id, taskId);
+
+    const { data: currentInteraction, error: currentInteractionError } = await supabaseAdmin
+      .from("tarefa_interacoes")
+      .select("*")
+      .eq("id", interactionId)
+      .eq("tarefa_id", taskId)
+      .maybeSingle();
+
+    if (currentInteractionError) {
+      throw currentInteractionError;
+    }
+
+    if (!currentInteraction) {
+      return res.status(404).json({ error: "Interação não encontrada." });
+    }
+
+    if (currentInteraction.autor_user_id !== user.id) {
+      return res.status(403).json({ error: "Você não pode alterar esta interação." });
+    }
+
+    const payload = normalizeInteractionPayload(req.body || {});
+    delete payload.tarefa_id;
+    delete payload.autor_tipo;
+    delete payload.autor_user_id;
+
+    if (Object.prototype.hasOwnProperty.call(payload, "mensagem")) {
+      payload.mensagem = String(payload.mensagem || "").trim();
+    }
+
+    if (!payload.mensagem) {
+      return res.status(400).json({ error: "Digite a mensagem antes de salvar." });
+    }
+
+    const encryptedPayload = encryptInteractionSensitiveFields(payload);
+
+    const { data, error } = await supabaseAdmin
+      .from("tarefa_interacoes")
+      .update(encryptedPayload)
+      .eq("id", interactionId)
+      .eq("tarefa_id", taskId)
+      .select()
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return res.json({ interaction: decryptInteractionSensitiveFields(data) });
+  } catch (error) {
+    return handleApiError(res, error, "Não foi possível alterar a interação.");
   }
 });
 
