@@ -30,6 +30,7 @@ const OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions";
 const OPENAI_IMAGE_ENDPOINT = "https://api.openai.com/v1/images/generations";
 const TASK_PDF_BUCKET = process.env.TASK_PDF_BUCKET || "banco-tarefas-pdf";
 const TASK_PDF_PREVIEW_BUCKET = process.env.TASK_PDF_PREVIEW_BUCKET || "banco-tarefas-preview";
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "marcos@rubo.com.br";
 const PDF_STANDARD_FONTS_URL = new URL("./node_modules/pdfjs-dist/standard_fonts/", import.meta.url).toString();
 
 const supabaseAdmin =
@@ -109,6 +110,14 @@ async function requireProfessionalProfile(userId) {
   }
 
   return profile;
+}
+
+function requireAdminUser(user) {
+  if (!user?.email || user.email !== ADMIN_EMAIL) {
+    throw Object.assign(new Error("Acesso permitido apenas para administradores."), {
+      statusCode: 403
+    });
+  }
 }
 
 async function verifyActiveProfessionalLink({ professionalUserId, patientUserId, vinculoId }) {
@@ -669,6 +678,30 @@ app.get("/api/session-summaries", async (req, res) => {
     return res.json({ summaries: decryptSessionSummarySensitiveRows(data || []) });
   } catch (error) {
     return handleApiError(res, error, "Não foi possível carregar os resumos salvos.");
+  }
+});
+
+app.get("/api/admin-v2/dataset", async (req, res) => {
+  try {
+    const user = await getAuthenticatedUser(req);
+    requireAdminUser(user);
+
+    const { data, error } = await supabaseAdmin.rpc("admin_v2_dataset");
+
+    if (error) {
+      throw error;
+    }
+
+    return res.json({
+      perfis: data?.perfis || [],
+      vinculos: data?.vinculos || [],
+      convites: data?.convites || [],
+      tarefas: decryptTaskSensitiveRows(data?.tarefas || []),
+      interacoes: decryptInteractionSensitiveRows(data?.interacoes || []),
+      logs: data?.logs || []
+    });
+  } catch (error) {
+    return handleApiError(res, error, "Não foi possível carregar o painel admin-v2.");
   }
 });
 
