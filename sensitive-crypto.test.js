@@ -7,9 +7,11 @@ import {
   SensitiveCryptoError,
   decryptInteractionSensitiveFields,
   decryptSensitive,
+  decryptSessionSummarySensitiveFields,
   decryptTaskSensitiveFields,
   encryptInteractionSensitiveFields,
   encryptSensitive,
+  encryptSessionSummarySensitiveFields,
   encryptTaskSensitiveFields,
   isEncryptedSensitiveValue,
   isSensitiveCryptoConfigured
@@ -69,7 +71,7 @@ test("bloqueia criptografia quando a chave não está configurada", () => {
   );
 });
 
-test("criptografa e descriptografa campos de tarefas e interações", () => {
+test("criptografa e descriptografa campos de tarefas, interações e resumos", () => {
   setValidKey();
 
   const task = encryptTaskSensitiveFields({
@@ -96,4 +98,20 @@ test("criptografa e descriptografa campos de tarefas e interações", () => {
 
   assert.equal(isEncryptedSensitiveValue(interaction.mensagem), true);
   assert.equal(decryptInteractionSensitiveFields(interaction).mensagem, "Mensagem terapêutica");
+
+  const summary = encryptSessionSummarySensitiveFields({
+    id: 20,
+    texto_transcrito: "Texto transcrito da sessão",
+    resumo_final: "Resumo final da sessão",
+    status: "rascunho"
+  });
+
+  assert.equal(isEncryptedSensitiveValue(summary.texto_transcrito), true);
+  assert.equal(isEncryptedSensitiveValue(summary.resumo_final), true);
+  assert.equal(summary.status, "rascunho");
+
+  const decryptedSummary = decryptSessionSummarySensitiveFields(summary);
+
+  assert.equal(decryptedSummary.texto_transcrito, "Texto transcrito da sessão");
+  assert.equal(decryptedSummary.resumo_final, "Resumo final da sessão");
 });

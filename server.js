@@ -9,9 +9,12 @@ import {
   SENSITIVE_CRYPTO_ENV_VAR,
   decryptInteractionSensitiveFields,
   decryptInteractionSensitiveRows,
+  decryptSessionSummarySensitiveFields,
+  decryptSessionSummarySensitiveRows,
   decryptTaskSensitiveFields,
   decryptTaskSensitiveRows,
   encryptInteractionSensitiveFields,
+  encryptSessionSummarySensitiveFields,
   encryptTaskSensitiveFields,
   isSensitiveCryptoConfigured
 } from "./sensitive-crypto.js";
@@ -175,6 +178,27 @@ function normalizeTaskPayload(payload = {}) {
 
 function normalizeInteractionPayload(payload = {}) {
   const allowedFields = ["tarefa_id", "autor_tipo", "autor_user_id", "mensagem"];
+
+  return allowedFields.reduce((result, field) => {
+    if (Object.prototype.hasOwnProperty.call(payload, field)) {
+      result[field] = payload[field];
+    }
+
+    return result;
+  }, {});
+}
+
+function normalizeSessionSummaryPayload(payload = {}) {
+  const allowedFields = [
+    "vinculo_id",
+    "professional_user_id",
+    "patient_user_id",
+    "data_sessao",
+    "texto_transcrito",
+    "resumo_final",
+    "status",
+    "origem_transcricao"
+  ];
 
   return allowedFields.reduce((result, field) => {
     if (Object.prototype.hasOwnProperty.call(payload, field)) {
@@ -610,6 +634,146 @@ app.patch("/api/tasks/:taskId/interactions/:interactionId", async (req, res) => 
     return res.json({ interaction: decryptInteractionSensitiveFields(data) });
   } catch (error) {
     return handleApiError(res, error, "Não foi possível alterar a interação.");
+  }
+});
+
+app.get("/api/session-summaries", async (req, res) => {
+  try {
+    const user = await getAuthenticatedUser(req);
+    await requireProfessionalProfile(user.id);
+
+    const vinculoId = String(req.query.vinculo_id || "").trim();
+    const patientUserId = String(req.query.patient_user_id || "").trim();
+
+    if (!vinculoId || !patientUserId) {
+      return res.status(400).json({ error: "Paciente e vínculo são obrigatórios." });
+    }
+
+    await verifyActiveProfessionalLink({
+      professionalUserId: user.id,
+      patientUserId,
+      vinculoId
+    });
+
+    const { data, error } = await supabaseAdmin
+      .from("resumos_sessao")
+      .select("id, data_sessao, texto_transcrito, resumo_final, status, created_at, updated_at")
+      .eq("professional_user_id", user.id)
+      .eq("vinculo_id", vinculoId)
+      .order("data_sessao", { ascending: false });
+
+    if (error) {
+      throw error;
+    }
+
+    return res.json({ summaries: decryptSessionSummarySensitiveRows(data || []) });
+  } catch (error) {
+    return handleApiError(res, error, "Não foi possível carregar os resumos salvos.");
+  }
+});
+
+app.post("/api/session-summaries", async (req, res) => {
+  try {
+    const user = await getAuthenticatedUser(req);
+    await requireProfessionalProfile(user.id);
+
+    const payload = normalizeSessionSummaryPayload(req.body || {});
+    const vinculoId = String(payload.vinculo_id || "").trim();
+    const patientUserId = String(payload.patient_user_id || "").trim();
+    const dataSessao = String(payload.data_sessao || "").trim();
+    const textoTranscrito = String(payload.texto_transcrito || "").trim();
+    const resumoFinal = String(payload.resumo_final || textoTranscrito).trim();
+
+    if (!vinculoId || !patientUserId) {
+      return res.status(400).json({ error: "Paciente e vínculo são obrigatórios." });
+    }
+
+    if (!dataSessao) {
+      return res.status(400).json({ error: "Informe a data da sessão." });
+    }
+
+    if (!textoTranscrito && !resumoFinal) {
+      return res.status(400).json({ error: "Informe o texto do resumo." });
+    }
+
+    const vinculo = await verifyActiveProfessionalLink({
+      professionalUserId: user.id,
+      patientUserId,
+      vinculoId
+    });
+
+    payload.vinculo_id = vinculo.id;
+    payload.professional_user_id = user.id;
+    payload.patient_user_id = patientUserId;
+    payload.data_sessao = dataSessao;
+    payload.texto_transcrito = textoTranscrito || resumoFinal;
+    payload.resumo_final = resumoFinal || textoTranscrito;
+    payload.status = String(payload.status || "rascunho").trim() || "rascunho";
+    payload.origem_transcricao =
+      String(payload.origem_transcricao || "navegador").trim() || "navegador";
+
+    const encryptedPayload = encryptSessionSummarySensitiveFields(payload);
+
+    const { data, error } = await supabaseAdmin
+      .from("resumos_sessao")
+      .upsert(encryptedPayload, { onConflict: "vinculo_id,data_sessao" })
+      .select()
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return res.status(201).json({
+      summary: decryptSessionSummarySensitiveFields(data)
+    });
+  } catch (error) {
+    return handleApiError(res, error, "Não foi possível gravar o resumo.");
+  }
+});
+
+app.delete("/api/session-summaries/:summaryId", async (req, res) => {
+  try {
+    const user = await getAuthenticatedUser(req);
+    await requireProfessionalProfile(user.id);
+
+    const summaryId = String(req.params.summaryId || "").trim();
+
+    if (!summaryId) {
+      return res.status(400).json({ error: "Resumo não informado." });
+    }
+
+    const { data: currentSummary, error: currentSummaryError } = await supabaseAdmin
+      .from("resumos_sessao")
+      .select("id, professional_user_id")
+      .eq("id", summaryId)
+      .maybeSingle();
+
+    if (currentSummaryError) {
+      throw currentSummaryError;
+    }
+
+    if (!currentSummary) {
+      return res.status(404).json({ error: "Resumo não encontrado." });
+    }
+
+    if (currentSummary.professional_user_id !== user.id) {
+      return res.status(403).json({ error: "Você não pode excluir este resumo." });
+    }
+
+    const { error } = await supabaseAdmin
+      .from("resumos_sessao")
+      .delete()
+      .eq("id", summaryId)
+      .eq("professional_user_id", user.id);
+
+    if (error) {
+      throw error;
+    }
+
+    return res.json({ ok: true });
+  } catch (error) {
+    return handleApiError(res, error, "Não foi possível excluir o resumo.");
   }
 });
 
