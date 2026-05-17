@@ -331,6 +331,42 @@ app.get("/api/tasks/professional", async (req, res) => {
   }
 });
 
+app.get("/api/tasks/professional/counts", async (req, res) => {
+  try {
+    const user = await getAuthenticatedUser(req);
+    await requireProfessionalProfile(user.id);
+
+    const patientIds = String(req.query.patient_user_ids || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+
+    if (!patientIds.length) {
+      return res.json({ counts: {} });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from("tarefas")
+      .select("patient_user_id")
+      .eq("professional_user_id", user.id)
+      .in("patient_user_id", patientIds);
+
+    if (error) {
+      throw error;
+    }
+
+    const counts = (data || []).reduce((result, task) => {
+      if (!task.patient_user_id) return result;
+      result[task.patient_user_id] = (result[task.patient_user_id] || 0) + 1;
+      return result;
+    }, {});
+
+    return res.json({ counts });
+  } catch (error) {
+    return handleApiError(res, error, "Não foi possível carregar a quantidade de tarefas.");
+  }
+});
+
 app.get("/api/tasks/patient", async (req, res) => {
   try {
     const user = await getAuthenticatedUser(req);
